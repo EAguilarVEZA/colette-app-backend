@@ -6,12 +6,13 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
 // ---------- config ----------
+const clean = (v?: string) => (v || '').trim();
 export const cfg = {
-  merchantId: process.env.CLOVER_MERCHANT_ID || '',
-  apiToken: process.env.CLOVER_API_TOKEN || '',
-  apiBase: process.env.CLOVER_API_BASE || 'https://sandbox.dev.clover.com',
-  ecommBase: process.env.CLOVER_ECOMM_BASE || 'https://scl-sandbox.dev.clover.com',
-  ecommKey: process.env.CLOVER_ECOMM_PRIVATE_KEY || '',
+  merchantId: clean(process.env.CLOVER_MERCHANT_ID),
+  apiToken: clean(process.env.CLOVER_API_TOKEN),
+  apiBase: clean(process.env.CLOVER_API_BASE) || 'https://sandbox.dev.clover.com',
+  ecommBase: clean(process.env.CLOVER_ECOMM_BASE) || 'https://scl-sandbox.dev.clover.com',
+  ecommKey: clean(process.env.CLOVER_ECOMM_PRIVATE_KEY),
   defaultOrderType: process.env.DEFAULT_ORDER_TYPE || 'PICKUP',
   allowedOrigins: (process.env.ALLOWED_ORIGINS || '*').split(',').map((s) => s.trim()),
 };
