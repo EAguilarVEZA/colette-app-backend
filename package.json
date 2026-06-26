@@ -1,0 +1,16 @@
+{
+  "name": "colette-app-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Colette branded ordering app — Vercel serverless backend on the Clover API",
+  "type": "module",
+  "scripts": {
+    "dev": "vercel dev",
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@vercel/node": "^3.2.0",
+    "typescript": "^5.5.0"
+  }
+}
