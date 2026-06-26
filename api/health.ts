@@ -11,6 +11,10 @@ export default function handler(req: VercelRequest, res: VercelResponse) {
     env: {
       apiBase: cfg.apiBase,
       ecommBase: cfg.ecommBase,
+      merchantId: cfg.merchantId,
+      merchantIdLen: cfg.merchantId.length,
+      tokenPreview: cfg.apiToken ? cfg.apiToken.slice(0, 6) + '…' + cfg.apiToken.slice(-4) : 'none',
+      tokenLen: cfg.apiToken.length,
       merchantConfigured: !!cfg.merchantId,
       tokenConfigured: !!cfg.apiToken,
       ecommKeyConfigured: !!cfg.ecommKey,
