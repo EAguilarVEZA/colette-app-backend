@@ -158,6 +158,44 @@ export async function createOrder(opts: {
   return { orderId: raw?.id, raw };
 }
 
+// ---------- Best sellers (from order history) ----------
+export interface PopularItem { name: string; itemId?: string; count: number; revenue: number }
+
+// Aggregate recent orders' line items to rank best-selling products by units sold + revenue.
+export async function getPopular(opts?: { days?: number; maxOrders?: number }): Promise<PopularItem[]> {
+  const days = opts?.days ?? 90;
+  const since = Date.now() - days * 24 * 60 * 60 * 1000;
+  const maxOrders = opts?.maxOrders ?? 1000; // one page; raise later if needed
+  const agg: Record<string, { name: string; itemId?: string; count: number; revenue: number }> = {};
+  let offset = 0;
+  const pageSize = 1000;
+  let fetched = 0;
+  while (fetched < maxOrders) {
+    const filter = encodeURIComponent(`createdTime>=${since}`);
+    const data = await restFetch(`/orders?expand=lineItems&filter=${filter}&limit=${pageSize}&offset=${offset}`);
+    const orders: any[] = data?.elements || [];
+    if (!orders.length) break;
+    for (const o of orders) {
+      const lineItems: any[] = o.lineItems?.elements || [];
+      for (const li of lineItems) {
+        const name: string = li.name || 'Unknown';
+        const key = name.toLowerCase().trim();
+        const priceCents = typeof li.price === 'number' ? li.price : 0;
+        if (!agg[key]) agg[key] = { name, itemId: li.item?.id, count: 0, revenue: 0 };
+        agg[key].count += 1;
+        agg[key].revenue += priceCents;
+      }
+    }
+    fetched += orders.length;
+    offset += pageSize;
+    if (orders.length < pageSize) break;
+  }
+  return Object.values(agg)
+    .map((x) => ({ name: x.name, itemId: x.itemId, count: x.count, revenue: x.revenue / 100 }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 50);
+}
+
 // ---------- Ecommerce API (payments + Apple Pay) ----------
 // `source` is a single-use token created client-side via the Clover hosted
 // iframe (card entry) or from an Apple Pay token. We never see raw card data.
