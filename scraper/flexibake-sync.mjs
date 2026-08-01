@@ -22,9 +22,9 @@ const log = (...a) => console.log(...a);
 const resetZero = async () => {
   let offset = 0, total = 0;
   for (;;) {
-    const r = await fetch(`${BACKEND}/api/inventory-reset-zero`, {
+    const r = await fetch(`${BACKEND}/api/ops`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'x-colette-secret': SECRET },
-      body: JSON.stringify({ offset, limit: 40 }),
+      body: JSON.stringify({ action: 'inventory-reset-zero', offset, limit: 40 }),
     });
     const out = await r.json();
     if (!r.ok || !out.ok) { console.error('Reset error:', JSON.stringify(out)); process.exit(1); }
@@ -96,10 +96,10 @@ const run = async () => {
     if (!lines.length) { log('No positive quantities found.'); await browser.close(); return; }
 
     // 4) Push to Clover backend (it adds to stock)
-    const res = await fetch(`${BACKEND}/api/inventory-receive`, {
+    const res = await fetch(`${BACKEND}/api/ops`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-colette-secret': SECRET },
-      body: JSON.stringify({ lines }),
+      body: JSON.stringify({ action: 'inventory-receive', lines }),
     });
     const out = await res.json();
     if (!res.ok || !out.ok) { console.error('Backend error:', JSON.stringify(out)); process.exit(1); }
