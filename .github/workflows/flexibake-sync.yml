@@ -3,7 +3,12 @@ name: FlexiBake → Clover inventory sync
 on:
   schedule:
     - cron: '0 21 * * *'   # 21:00 UTC = ~5pm ET; runs daily after ordering hours
-  workflow_dispatch: {}      # allows manual "Run workflow" from the Actions tab
+  workflow_dispatch:         # manual "Run workflow" from the Actions tab
+    inputs:
+      task:
+        description: 'sync (default) or reset (one-time: zero all inventory)'
+        required: false
+        default: 'sync'
 
 jobs:
   sync:
@@ -26,4 +31,5 @@ jobs:
           FLEXIBAKE_PASS: ${{ secrets.FLEXIBAKE_PASS }}
           BACKEND_URL: ${{ secrets.BACKEND_URL }}
           SYNC_SECRET: ${{ secrets.SYNC_SECRET }}
+          TASK: ${{ github.event.inputs.task || 'sync' }}
         run: npm run sync
