@@ -48,21 +48,27 @@ export function fail(res: VercelResponse, status: number, message: string, extra
 }
 
 // ---------- REST API (menu, orders, customers) ----------
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 async function restFetch(path: string, init: RequestInit = {}) {
   const url = `${cfg.apiBase}/v3/merchants/${cfg.merchantId}${path}`;
-  const r = await fetch(url, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${cfg.apiToken}`,
-      'Content-Type': 'application/json',
-      ...(init.headers || {}),
-    },
-  });
-  const text = await r.text();
-  let body: any = null;
-  try { body = text ? JSON.parse(text) : null; } catch { body = text; }
-  if (!r.ok) throw { status: r.status, body };
-  return body;
+  // Retry on Clover rate limiting (429) with exponential backoff.
+  for (let attempt = 0; ; attempt++) {
+    const r = await fetch(url, {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${cfg.apiToken}`,
+        'Content-Type': 'application/json',
+        ...(init.headers || {}),
+      },
+    });
+    if (r.status === 429 && attempt < 5) { await sleep(600 * (attempt + 1)); continue; }
+    const text = await r.text();
+    let body: any = null;
+    try { body = text ? JSON.parse(text) : null; } catch { body = text; }
+    if (!r.ok) throw { status: r.status, body };
+    return body;
+  }
 }
 
 export interface Modifier { id: string; name: string; priceCents: number; price: number }
@@ -354,6 +360,7 @@ export async function suggestReorder(opts?: { days?: number; leadDays?: number }
     const target = Math.ceil(avgPerDay * leadDays);
     const suggested = Math.max(0, target - stock);
     out.push({ code, product: cloverName, soldLast: sold, avgPerDay: Math.round(avgPerDay * 100) / 100, currentStock: stock, suggested });
+    await sleep(120); // be gentle with Clover's rate limit
   }
   return { days, leadDays, items: out };
 }
