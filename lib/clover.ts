@@ -178,6 +178,92 @@ export async function setOrderNote(orderId: string, note: string): Promise<void>
   });
 }
 
+// ---------- Inventory (item stock) — for the Alon's/FlexiBake sync ----------
+// Alon's wholesale product CODE -> Clover item NAME (resolved to id at run time).
+export const ALON_MAP: Record<string, string> = {
+  '7152': 'Almond Croissant',
+  '7153': 'Apple Vanilla Danish',
+  '7184': 'Blueberry Muffin',
+  '7156': 'Cheese Danish',
+  '7160': 'Chocolate Croissant',
+  '7164': 'Cranberry Scone',
+  '19347': 'Sesame Gruyère Twist',
+  '795': 'Hazelnut Chocolate Danish',
+  '4111': 'Kouign-Amann',
+  '7171': 'Plain Butter Croissant',
+  '999997': 'Mushroom & Fontina Quiche',
+  '999995': 'Spinach And Butternut Squash',
+  '7176': 'Raspberry Cheese Danish',
+  '0192': 'Twice-Baked Almond Croissant',
+};
+
+const normName = (s?: string) => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+// Light list of every item (id + name) — no expands, for stock ops.
+export async function listItems(): Promise<{ id: string; name: string }[]> {
+  const out: { id: string; name: string }[] = [];
+  let offset = 0;
+  const page = 1000;
+  for (;;) {
+    const data = await restFetch(`/items?limit=${page}&offset=${offset}`);
+    const els: any[] = data?.elements || [];
+    for (const it of els) out.push({ id: it.id, name: it.name });
+    if (els.length < page) break;
+    offset += page;
+  }
+  return out;
+}
+
+export async function getStock(itemId: string): Promise<number> {
+  try {
+    const s = await restFetch(`/item_stocks/${itemId}`);
+    return typeof s?.quantity === 'number' ? s.quantity : (typeof s?.stockCount === 'number' ? s.stockCount : 0);
+  } catch (e: any) {
+    if (e?.status === 404) return 0; // not tracked yet
+    throw e;
+  }
+}
+
+export async function setStock(itemId: string, quantity: number): Promise<void> {
+  await restFetch(`/item_stocks/${itemId}`, {
+    method: 'POST',
+    body: JSON.stringify({ quantity }),
+  });
+}
+
+// Zero a chunk of items' stock (paged to avoid serverless timeouts).
+export async function resetStockZero(offset = 0, limit = 40): Promise<{ processed: number; nextOffset: number | null; total: number }> {
+  const items = await listItems();
+  const slice = items.slice(offset, offset + limit);
+  for (const it of slice) { try { await setStock(it.id, 0); } catch { /* skip untrackable */ } }
+  const next = offset + limit;
+  return { processed: slice.length, nextOffset: next < items.length ? next : null, total: items.length };
+}
+
+// Add received quantities to stock. lines: [{code?, itemId?, name?, qty}].
+export async function receiveStock(lines: { code?: string; itemId?: string; name?: string; qty: number }[]) {
+  const items = await listItems();
+  const byId = new Map(items.map((i) => [i.id, i]));
+  const byName = new Map(items.map((i) => [normName(i.name), i]));
+  const results: any[] = [];
+  for (const l of lines) {
+    let id = l.itemId;
+    let label = l.name || l.code || l.itemId;
+    if (!id && l.code && ALON_MAP[l.code]) { const m = byName.get(normName(ALON_MAP[l.code])); if (m) id = m.id; label = ALON_MAP[l.code]; }
+    if (!id && l.name) { const m = byName.get(normName(l.name)); if (m) id = m.id; }
+    if (!id || !byId.has(id)) { results.push({ label, matched: false, qty: l.qty }); continue; }
+    try {
+      const cur = await getStock(id);
+      const next = cur + l.qty;
+      await setStock(id, next);
+      results.push({ label, itemId: id, matched: true, from: cur, added: l.qty, to: next });
+    } catch (e: any) {
+      results.push({ label, itemId: id, matched: true, error: e?.body ?? String(e) });
+    }
+  }
+  return results;
+}
+
 // ---------- Leads / first-party database (Clover Customers) ----------
 // We store each opt-in as a Clover CUSTOMER so the marketing list lives inside
 // the CRM the store already uses. Dedup by email/phone so a person only ever
