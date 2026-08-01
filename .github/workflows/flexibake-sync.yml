@@ -1,0 +1,29 @@
+name: FlexiBake → Clover inventory sync
+
+on:
+  schedule:
+    - cron: '0 21 * * *'   # 21:00 UTC = ~5pm ET; runs daily after ordering hours
+  workflow_dispatch: {}      # allows manual "Run workflow" from the Actions tab
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: scraper
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install deps + Chromium
+        run: |
+          npm install
+          npx playwright install --with-deps chromium
+      - name: Run sync
+        env:
+          FLEXIBAKE_USER: ${{ secrets.FLEXIBAKE_USER }}
+          FLEXIBAKE_PASS: ${{ secrets.FLEXIBAKE_PASS }}
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+          SYNC_SECRET: ${{ secrets.SYNC_SECRET }}
+        run: npm run sync
