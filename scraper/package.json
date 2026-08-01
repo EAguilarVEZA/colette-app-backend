@@ -1,0 +1,7 @@
+{
+  "name": "colette-flexibake-sync",
+  "private": true,
+  "type": "module",
+  "scripts": { "sync": "node flexibake-sync.mjs" },
+  "dependencies": { "playwright": "^1.47.0" }
+}
