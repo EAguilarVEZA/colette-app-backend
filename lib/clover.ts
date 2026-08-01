@@ -158,6 +158,26 @@ export async function createOrder(opts: {
   return { orderId: raw?.id, raw };
 }
 
+// Fire an existing order to the store's order/kitchen printer (or the Clover
+// device's onboard printer). Requires the API token to have Write orders +
+// Read orders permission, and a printer/Clover device configured & online.
+// Docs: POST /v3/merchants/{mId}/print_event  body { order: { id } }
+export async function printOrder(orderId: string): Promise<{ ok: boolean; raw: any }> {
+  const raw = await restFetch('/print_event', {
+    method: 'POST',
+    body: JSON.stringify({ order: { id: orderId } }),
+  });
+  return { ok: true, raw };
+}
+
+// Attach a note to an order (e.g. mark it PAID ONLINE so staff reconcile it).
+export async function setOrderNote(orderId: string, note: string): Promise<void> {
+  await restFetch(`/orders/${orderId}`, {
+    method: 'POST',
+    body: JSON.stringify({ note }),
+  });
+}
+
 // ---------- Best sellers (from order history) ----------
 export interface PopularItem { name: string; itemId?: string; count: number; revenue: number }
 
