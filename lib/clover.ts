@@ -343,26 +343,27 @@ export async function getAllCustomers(): Promise<CustomerRow[]> {
 }
 
 // ---------- Reorder suggestions (Phase 2 brain) ----------
-// For each Alon's product, suggest a reorder qty from recent Clover sales:
-// suggested = ceil(avgPerDay * leadDays) - currentStock, floored at 0.
-export async function suggestReorder(opts?: { days?: number; leadDays?: number }) {
-  const days = opts?.days ?? 30;
-  const leadDays = opts?.leadDays ?? 3;
-  const [items, popular] = await Promise.all([listItems(), getPopular({ days })]);
-  const byName = new Map(items.map((i) => [normName(i.name), i]));
+// Pure DEMAND forecast from historical sales — deliberately ignores the current
+// (often negative/unreliable) stock count. suggested = ceil(avgPerDay * coverDays),
+// where avgPerDay is averaged over a multi-month window of real Clover sales.
+export async function suggestReorder(opts?: { days?: number; coverDays?: number }) {
+  const days = opts?.days ?? 120;        // ~4 months of history by default
+  const coverDays = opts?.coverDays ?? 3; // how many days each order should cover
+  // Page through up to ~20k orders in the window for a solid average.
+  const popular = await getPopular({ days, maxOrders: 20000 });
   const soldByName = new Map(popular.map((p) => [normName(p.name), p.count]));
   const out: any[] = [];
   for (const [code, cloverName] of Object.entries(ALON_MAP)) {
-    const item = byName.get(normName(cloverName));
     const sold = soldByName.get(normName(cloverName)) || 0;
-    const stock = item ? await getStock(item.id) : 0;
     const avgPerDay = sold / days;
-    const target = Math.ceil(avgPerDay * leadDays);
-    const suggested = Math.max(0, target - stock);
-    out.push({ code, product: cloverName, soldLast: sold, avgPerDay: Math.round(avgPerDay * 100) / 100, currentStock: stock, suggested });
-    await sleep(120); // be gentle with Clover's rate limit
+    const suggested = Math.ceil(avgPerDay * coverDays);
+    out.push({
+      code, product: cloverName,
+      soldInWindow: sold, avgPerDay: Math.round(avgPerDay * 100) / 100,
+      coverDays, suggested,
+    });
   }
-  return { days, leadDays, items: out };
+  return { windowDays: days, coverDays, note: 'demand-based; ignores current stock count', items: out };
 }
 
 // ---------- Best sellers (from order history) ----------
