@@ -305,6 +305,59 @@ export async function createLead(opts: {
   return { customerId: raw?.id, raw };
 }
 
+// ---------- Full customer export (name, email, phone, consent) ----------
+// NOTE: Clover does NOT expose loyalty/rewards points via the REST API, so
+// points are not included here (export them from the Clover dashboard instead).
+export interface CustomerRow {
+  id: string; firstName: string; lastName: string;
+  emails: string; phones: string; marketingAllowed: boolean; since: string; note: string;
+}
+export async function getAllCustomers(): Promise<CustomerRow[]> {
+  const rows: CustomerRow[] = [];
+  let offset = 0; const page = 1000;
+  for (;;) {
+    const data = await restFetch(`/customers?expand=emailAddresses,phoneNumbers,metadata&limit=${page}&offset=${offset}`);
+    const els: any[] = data?.elements || [];
+    for (const c of els) {
+      rows.push({
+        id: c.id,
+        firstName: c.firstName || '',
+        lastName: c.lastName || '',
+        emails: (c.emailAddresses?.elements || []).map((x: any) => x.emailAddress).filter(Boolean).join('; '),
+        phones: (c.phoneNumbers?.elements || []).map((x: any) => x.phoneNumber).filter(Boolean).join('; '),
+        marketingAllowed: c.marketingAllowed === true,
+        since: c.customerSince ? new Date(c.customerSince).toISOString().slice(0, 10) : '',
+        note: c.metadata?.note || '',
+      });
+    }
+    if (els.length < page) break;
+    offset += page;
+  }
+  return rows;
+}
+
+// ---------- Reorder suggestions (Phase 2 brain) ----------
+// For each Alon's product, suggest a reorder qty from recent Clover sales:
+// suggested = ceil(avgPerDay * leadDays) - currentStock, floored at 0.
+export async function suggestReorder(opts?: { days?: number; leadDays?: number }) {
+  const days = opts?.days ?? 30;
+  const leadDays = opts?.leadDays ?? 3;
+  const [items, popular] = await Promise.all([listItems(), getPopular({ days })]);
+  const byName = new Map(items.map((i) => [normName(i.name), i]));
+  const soldByName = new Map(popular.map((p) => [normName(p.name), p.count]));
+  const out: any[] = [];
+  for (const [code, cloverName] of Object.entries(ALON_MAP)) {
+    const item = byName.get(normName(cloverName));
+    const sold = soldByName.get(normName(cloverName)) || 0;
+    const stock = item ? await getStock(item.id) : 0;
+    const avgPerDay = sold / days;
+    const target = Math.ceil(avgPerDay * leadDays);
+    const suggested = Math.max(0, target - stock);
+    out.push({ code, product: cloverName, soldLast: sold, avgPerDay: Math.round(avgPerDay * 100) / 100, currentStock: stock, suggested });
+  }
+  return { days, leadDays, items: out };
+}
+
 // ---------- Best sellers (from order history) ----------
 export interface PopularItem { name: string; itemId?: string; count: number; revenue: number }
 
