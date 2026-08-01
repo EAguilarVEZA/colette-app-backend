@@ -178,6 +178,47 @@ export async function setOrderNote(orderId: string, note: string): Promise<void>
   });
 }
 
+// ---------- Leads / first-party database (Clover Customers) ----------
+// We store each opt-in as a Clover CUSTOMER so the marketing list lives inside
+// the CRM the store already uses. Dedup by email/phone so a person only ever
+// gets the welcome offer once.
+const digits = (s?: string) => (s || '').replace(/\D/g, '');
+
+export async function findLead(email?: string, phone?: string): Promise<any | null> {
+  const e = (email || '').trim().toLowerCase();
+  const p = digits(phone).slice(-10); // compare on last 10 digits
+  if (!e && !p) return null;
+  // Small lists early on: scan customers with contacts expanded and match in code.
+  const data = await restFetch('/customers?expand=emailAddresses,phoneNumbers&limit=1000');
+  const list: any[] = data?.elements || [];
+  for (const c of list) {
+    const emails = (c.emailAddresses?.elements || []).map((x: any) => (x.emailAddress || '').trim().toLowerCase());
+    const phones = (c.phoneNumbers?.elements || []).map((x: any) => digits(x.phoneNumber).slice(-10));
+    if (e && emails.includes(e)) return c;
+    if (p && phones.includes(p)) return c;
+  }
+  return null;
+}
+
+export async function createLead(opts: {
+  email?: string; phone?: string; firstName?: string;
+  emailConsent: boolean; smsConsent: boolean; source?: string;
+}): Promise<{ customerId: string; raw: any }> {
+  const consentNote =
+    `MARKETING OPT-IN · email_consent=${opts.emailConsent ? 'Y' : 'N'} · ` +
+    `sms_consent=${opts.smsConsent ? 'Y' : 'N'} · source=${opts.source || 'web'} · ` +
+    `at=${new Date().toISOString()}`;
+  const body: any = {
+    firstName: opts.firstName || 'Web',
+    marketingAllowed: opts.emailConsent || opts.smsConsent,
+    metadata: { note: consentNote },
+  };
+  if (opts.email) body.emailAddresses = [{ emailAddress: opts.email.trim() }];
+  if (opts.phone) body.phoneNumbers = [{ phoneNumber: opts.phone.trim() }];
+  const raw = await restFetch('/customers', { method: 'POST', body: JSON.stringify(body) });
+  return { customerId: raw?.id, raw };
+}
+
 // ---------- Best sellers (from order history) ----------
 export interface PopularItem { name: string; itemId?: string; count: number; revenue: number }
 
