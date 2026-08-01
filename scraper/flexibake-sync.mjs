@@ -17,6 +17,25 @@ if (!USER || !PASS || !SECRET) { console.error('Missing FLEXIBAKE_USER / FLEXIBA
 const todayET = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', month: 'numeric', day: 'numeric', year: 'numeric' }).format(new Date());
 const log = (...a) => console.log(...a);
 
+// One-time: zero every Clover item's stock (fixes the negative counts) before
+// we start receiving. Trigger via the "Run workflow" button with task=reset.
+const resetZero = async () => {
+  let offset = 0, total = 0;
+  for (;;) {
+    const r = await fetch(`${BACKEND}/api/inventory-reset-zero`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-colette-secret': SECRET },
+      body: JSON.stringify({ offset, limit: 40 }),
+    });
+    const out = await r.json();
+    if (!r.ok || !out.ok) { console.error('Reset error:', JSON.stringify(out)); process.exit(1); }
+    total += out.processed;
+    log(`Zeroed ${total}/${out.total}`);
+    if (out.done || out.nextOffset == null) break;
+    offset = out.nextOffset;
+  }
+  log('Inventory reset complete — all items set to 0.');
+};
+
 const run = async () => {
   const browser = await chromium.launch();
   const page = await browser.newPage();
@@ -91,4 +110,5 @@ const run = async () => {
   }
 };
 
-run().catch((e) => { console.error(e); process.exit(1); });
+const main = process.env.TASK === 'reset' ? resetZero : run;
+main().catch((e) => { console.error(e); process.exit(1); });
