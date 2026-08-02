@@ -96,23 +96,28 @@ const run = async () => {
       const rowLoc = page.locator('tr', { hasText: orderNo }).first();
       await Promise.all([ page.waitForLoadState('domcontentloaded').catch(() => {}), rowLoc.getByText('View', { exact: true }).click() ]);
       await page.waitForTimeout(1500);
-      // Read the whole order table in ONE browser call (fast, can't hang):
-      // each row's first cell = product CODE, first input = QUANTITY.
-      const lineItems = await page.evaluate(() => {
-        const out = [];
+      // Read the whole order table in ONE browser call. Handles both editable
+      // (open order: qty in an <input>) and read-only (placed order: qty as text).
+      const parsed = await page.evaluate(() => {
+        const out = []; const dbg = [];
         document.querySelectorAll('tr').forEach((tr) => {
           const tds = tr.querySelectorAll('td');
-          if (!tds.length) return;
+          if (tds.length < 3) return;
           const code = (tds[0].innerText || '').trim();
-          if (!/^\d+$/.test(code)) return; // code cells are numeric
+          if (!/^\d+$/.test(code)) return; // first cell = numeric product code
+          let qty = 0;
           const inp = tr.querySelector('input');
-          const qty = parseFloat(String(inp ? inp.value : '').replace(/[^0-9.]/g, ''));
+          if (inp && /\d/.test(inp.value || '')) qty = parseFloat(String(inp.value).replace(/[^0-9.]/g, ''));
+          if (!qty) { // else: first integer-only cell after the code (price/total have decimals)
+            for (let i = 1; i < tds.length; i++) { const t = (tds[i].innerText || '').trim(); if (/^\d+$/.test(t)) { qty = parseInt(t, 10); break; } }
+          }
           if (qty > 0) out.push({ code, qty });
+          if (dbg.length < 3) dbg.push((tr.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 120));
         });
-        return out;
+        return { out, dbg };
       });
-      for (const li of lineItems) agg[li.code] = (agg[li.code] || 0) + li.qty;
-      log(`  Order ${orderNo}: ${lineItems.length} line(s)`);
+      for (const li of parsed.out) agg[li.code] = (agg[li.code] || 0) + li.qty;
+      log(`  Order ${orderNo}: ${parsed.out.length} line(s). sample rows:`, JSON.stringify(parsed.dbg));
     }
 
     const lines = Object.entries(agg).map(([code, qty]) => ({ code, qty }));
