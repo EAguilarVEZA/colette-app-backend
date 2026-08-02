@@ -8,7 +8,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
   applyCors, assertConfigured, fail,
-  suggestReorder, getAllCustomers, receiveStock, resetStockZero, salesSummary,
+  suggestReorder, suggestReorderSmart, getAllCustomers, receiveStock, resetStockZero, salesSummary, setItemCosts, setItemPrices,
 } from '../lib/clover.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -35,17 +35,56 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const dow = req.query.dow !== undefined ? Number(req.query.dow) : undefined;
         return res.status(200).json({ ok: true, ...(await suggestReorder({ days, dow })) });
       }
+      case 'reorder-plan': {
+        if (req.method !== 'GET') return fail(res, 405, 'Use GET');
+        const days = Math.min(Number(req.query.days) || 365, 400);
+        const dow = req.query.dow !== undefined ? Number(req.query.dow) : undefined;
+        const buffer = req.query.buffer !== undefined ? Number(req.query.buffer) : undefined;
+        res.setHeader('Cache-Control', 's-maxage=600, stale-while-revalidate=1800');
+        return res.status(200).json({ ok: true, ...(await suggestReorderSmart({ days, dow, buffer })) });
+      }
       case 'metrics': {
         if (req.method !== 'GET') return fail(res, 405, 'Use GET');
         const days = Math.min(Number(req.query.days) || 35, 90);
         res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=900');
         return res.status(200).json({ ok: true, ...(await salesSummary({ days })) });
       }
+      case 'place-order': {
+        // Approve + place the Alon order. When a GitHub dispatch token is set,
+        // this triggers the FlexiBake placement workflow with the approved lines;
+        // until the new-order automation is switched on it records the approval.
+        if (req.method !== 'POST') return fail(res, 405, 'Use POST');
+        const lines = body?.lines;
+        const targetDay = body?.targetDay || '';
+        if (!Array.isArray(lines) || !lines.length) return fail(res, 400, 'lines[] required');
+        const token = process.env.GH_DISPATCH_TOKEN;
+        const repo = process.env.GH_REPO || 'EAguilarVEZA/colette-app-backend';
+        if (token) {
+          const gh = await fetch(`https://api.github.com/repos/${repo}/actions/workflows/flexibake-sync.yml/dispatches`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json', 'User-Agent': 'colette-dashboard' },
+            body: JSON.stringify({ ref: 'main', inputs: { task: 'place', order: JSON.stringify(lines).slice(0, 60000), date: targetDay } }),
+          });
+          if (gh.status === 204) return res.status(200).json({ ok: true, placed: true, dispatched: true, targetDay, lines });
+          const detail = await gh.text();
+          return fail(res, 502, 'Dispatch failed', detail);
+        }
+        // Not yet wired to auto-place — record the approval so the UI can confirm.
+        return res.status(200).json({ ok: true, placed: false, dispatched: false, targetDay, lines,
+          note: 'Approval recorded. Auto-submit to Alon activates after the new-order recon + placement step.' });
+      }
       case 'customers-export': {
         if (req.method !== 'GET') return fail(res, 405, 'Use GET');
         if (!requireAuth()) return;
         const customers = await getAllCustomers();
         return res.status(200).json({ ok: true, count: customers.length, customers });
+      }
+      case 'set-costs': {
+        if (req.method !== 'POST') return fail(res, 405, 'Use POST');
+        if (!requireAuth()) return;
+        const results = await setItemCosts(body?.costs);
+        const priceFixes = await setItemPrices(body?.prices);
+        return res.status(200).json({ ok: true, matched: results.filter((r: any) => r.matched).length, total: results.length, results, priceFixes });
       }
       case 'inventory-receive': {
         if (req.method !== 'POST') return fail(res, 405, 'Use POST');
@@ -64,7 +103,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(200).json({ ok: true, done: r.nextOffset === null, ...r });
       }
       default:
-        return fail(res, 400, 'Unknown action. Use reorder-suggest | metrics | customers-export | inventory-receive | inventory-reset-zero');
+        return fail(res, 400, 'Unknown action. Use reorder-suggest | reorder-plan | metrics | place-order | set-costs | customers-export | inventory-receive | inventory-reset-zero');
     }
   } catch (e: any) {
     fail(res, e?.status || 502, `${action} failed`, e?.body ?? String(e));
