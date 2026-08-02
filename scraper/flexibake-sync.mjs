@@ -152,7 +152,135 @@ const run = async () => {
   }
 };
 
+// ---- Order PLACEMENT into Alon's (safe by default) ----
+// PLACE_MODE: 'dryrun' (fill only) | 'review' (fill + go to Review page, HOLD — nothing
+// submitted) | 'submit' (fill + Review + final submit). Default = review.
+// Quantities come from ORDER env (JSON [{code,qty}]) or, if empty, the smart
+// reorder recommendation for the target weekday. Target delivery date = PLACE_DATE
+// (M/D/YYYY or ISO) or today ET + 2 days (skipping Monday, which is closed).
+const PLACE_MODE = (process.env.PLACE_MODE || 'review').toLowerCase();
+const placeTarget = () => {
+  const raw = (process.env.PLACE_DATE || '').trim();
+  if (raw) return new Date(raw.includes('-') ? raw : raw);
+  const et = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  let d = new Date(et.getTime() + 2 * 86400000);
+  if (d.getDay() === 1) d = new Date(et.getTime() + 3 * 86400000); // skip Monday (closed)
+  return d;
+};
+
+const placeOrder = async () => {
+  const browser = await chromium.launch();
+  const page = await browser.newPage();
+  try {
+    // Login (same flow as the sync job)
+    await page.goto(`${BASE}/FBWSLogon.aspx`, { waitUntil: 'networkidle' });
+    await page.locator('input:not([type="password"]):not([type="hidden"]):not([type="submit"]):not([type="button"])').first().fill(USER);
+    await page.locator('input[type="password"]').first().fill(PASS);
+    await Promise.all([
+      page.waitForLoadState('networkidle').catch(() => {}),
+      page.locator('[id$="PB_EXIST_LOGON"]').first().click({ timeout: 15000 })
+        .catch(async () => { await page.getByRole('link', { name: 'Login', exact: true }).first().click(); }),
+    ]);
+    await page.waitForLoadState('domcontentloaded').catch(() => {});
+    await page.waitForTimeout(1500);
+    log('Logged in as', USER, '· PLACE_MODE:', PLACE_MODE);
+
+    const target = placeTarget();
+    const iso = `${target.getFullYear()}-${String(target.getMonth() + 1).padStart(2, '0')}-${String(target.getDate()).padStart(2, '0')}`;
+    log('Target delivery date:', iso, `(${target.toDateString()})`);
+
+    // Quantities: ORDER env or smart recommendation for that weekday.
+    let lines = [];
+    if ((process.env.ORDER || '').trim()) { try { lines = JSON.parse(process.env.ORDER); } catch { log('Bad ORDER JSON'); } }
+    if (!lines.length) {
+      const r = await fetch(`${BACKEND}/api/ops?action=reorder-plan&dow=${target.getDay()}`).then((x) => x.json()).catch(() => ({}));
+      lines = (r.items || []).map((i) => ({ code: i.code, qty: i.suggested })).filter((l) => l.qty > 0);
+      log('Using smart recommendation:', JSON.stringify(lines));
+    }
+    if (!lines.length) { log('No quantities to place — aborting.'); await browser.close(); return; }
+
+    // Delivery-date page: edit an existing order for that date if one exists, else create.
+    await page.goto(`${BASE}/FBWSDeliveryDate.aspx`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.waitForTimeout(1000);
+    const opened = await page.evaluate((isoDate) => {
+      const td = new Date(isoDate).toDateString();
+      for (const tr of document.querySelectorAll('tr')) {
+        const m = (tr.innerText || '').match(/[A-Za-z]{3}\.?\s+[A-Za-z]{3}\.?\s+\d{1,2},\s+\d{4}/);
+        if (m) {
+          const d = new Date(m[0].replace(/\./g, ''));
+          if (!isNaN(d) && d.toDateString() === td) {
+            const link = tr.querySelector('a[href*="__doPostBack"]');
+            const mm = link && link.getAttribute('href').match(/__doPostBack\('([^']+)'/);
+            if (mm) { __doPostBack(mm[1], ''); return 'edit'; }
+          }
+        }
+      }
+      return null;
+    }, iso);
+
+    if (opened === 'edit') {
+      log('Editing existing order for', iso);
+      await page.waitForLoadState('domcontentloaded').catch(() => {});
+      await page.waitForTimeout(1800);
+    } else {
+      log('Creating new order for', iso);
+      await page.locator('input[type="date"]').first().fill(iso).catch(() => {});
+      await page.waitForTimeout(400);
+      await Promise.all([
+        page.waitForLoadState('domcontentloaded').catch(() => {}),
+        (async () => {
+          try { await page.getByRole('link', { name: 'Next', exact: true }).first().click({ timeout: 8000 }); }
+          catch { await page.locator('[id$="PB_NEXT"]').first().click().catch(() => {}); }
+        })(),
+      ]);
+      await page.waitForTimeout(1800);
+    }
+
+    // Fill the QUANTITY input (4th cell) for each matching product code.
+    const filled = await page.evaluate((lines) => {
+      const byCode = {}; for (const l of lines) byCode[String(l.code)] = l.qty;
+      const done = [];
+      document.querySelectorAll('tr').forEach((tr) => {
+        const tds = tr.querySelectorAll('td'); if (tds.length < 4) return;
+        const code = (tds[0].innerText || '').trim(); if (!/^\d+$/.test(code) || !(code in byCode)) return;
+        const inp = tds[3].querySelector('input') || tr.querySelectorAll('input')[1];
+        if (inp) { inp.value = String(byCode[code]); inp.dispatchEvent(new Event('input', { bubbles: true })); inp.dispatchEvent(new Event('change', { bubbles: true })); done.push(`${code}:${byCode[code]}`); }
+      });
+      return done;
+    }, lines);
+    log(`Filled ${filled.length} lines:`, JSON.stringify(filled));
+    await page.waitForTimeout(800);
+    await page.screenshot({ path: 'order-filled.png', fullPage: true }).catch(() => {});
+
+    if (PLACE_MODE === 'dryrun') { log('DRYRUN — filled only. Nothing reviewed or submitted.'); await browser.close(); return; }
+
+    // Review Order (navigates to the review page; does NOT finalize)
+    await Promise.all([
+      page.waitForLoadState('domcontentloaded').catch(() => {}),
+      (async () => {
+        try { await page.getByRole('link', { name: /review order/i }).first().click({ timeout: 8000 }); }
+        catch { await page.locator('[id*="REVIEW"]').first().click().catch(() => {}); }
+      })(),
+    ]);
+    await page.waitForTimeout(1800);
+    await page.screenshot({ path: 'order-review.png', fullPage: true }).catch(() => {});
+    log('Reached Review page (screenshot saved).');
+
+    if (PLACE_MODE !== 'submit') { log('REVIEW mode — HOLDING before final submit. Nothing was submitted.'); await browser.close(); return; }
+
+    // Final submit — ONLY in submit mode
+    try { await page.getByRole('link', { name: /submit|place order|confirm|save/i }).first().click({ timeout: 8000 }); }
+    catch { await page.locator('[id*="SUBMIT"],[id*="CONFIRM"],[id*="SAVE"]').first().click().catch(() => {}); }
+    await page.waitForTimeout(1800);
+    await page.screenshot({ path: 'order-submitted.png', fullPage: true }).catch(() => {});
+    log('SUBMITTED order for', iso);
+  } finally {
+    await browser.close();
+  }
+};
+
 const main = process.env.TASK === 'reset' ? resetZero
   : process.env.TASK === 'setcosts' ? setCosts
+  : process.env.TASK === 'place' ? placeOrder
   : run;
 main().catch((e) => { console.error(e); process.exit(1); });
