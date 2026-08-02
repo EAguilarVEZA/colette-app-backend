@@ -40,14 +40,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const days = Math.min(Number(req.query.days) || 365, 400);
         const dow = req.query.dow !== undefined ? Number(req.query.dow) : undefined;
         const buffer = req.query.buffer !== undefined ? Number(req.query.buffer) : undefined;
-        res.setHeader('Cache-Control', 's-maxage=600, stale-while-revalidate=1800');
+        // Heavy (full-year pull): cache at the edge for 6h so only the first call/day is slow.
+        res.setHeader('Cache-Control', 's-maxage=21600, stale-while-revalidate=43200');
         return res.status(200).json({ ok: true, ...(await suggestReorderSmart({ days, dow, buffer })) });
       }
       case 'stockout': {
         if (req.method !== 'GET') return fail(res, 405, 'Use GET');
         const days = Math.min(Number(req.query.days) || 120, 365);
         const gap = req.query.gap !== undefined ? Number(req.query.gap) : undefined;
-        res.setHeader('Cache-Control', 's-maxage=600, stale-while-revalidate=1800');
+        res.setHeader('Cache-Control', 's-maxage=21600, stale-while-revalidate=43200');
         return res.status(200).json({ ok: true, ...(await stockoutAnalysis({ days, gapMinutes: gap })) });
       }
       case 'metrics': {
