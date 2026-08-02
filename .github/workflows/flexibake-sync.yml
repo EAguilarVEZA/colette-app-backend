@@ -6,11 +6,19 @@ on:
   workflow_dispatch:         # manual "Run workflow" from the Actions tab
     inputs:
       task:
-        description: 'sync (default) or reset (one-time: zero all inventory)'
+        description: 'sync | reset | setcosts | place'
         required: false
         default: 'sync'
       date:
-        description: 'Delivery date to sync (M/D/YYYY). Blank = today ET.'
+        description: 'Delivery date (M/D/YYYY or YYYY-MM-DD). Blank = today (sync) / today+2 (place).'
+        required: false
+        default: ''
+      place_mode:
+        description: 'For task=place: dryrun | review (default, holds before submit) | submit'
+        required: false
+        default: 'review'
+      order:
+        description: 'For task=place: optional JSON [{"code":"7171","qty":11}]. Blank = smart recommendation.'
         required: false
         default: ''
 
@@ -37,4 +45,14 @@ jobs:
           SYNC_SECRET: ${{ secrets.SYNC_SECRET }}
           TASK: ${{ github.event.inputs.task || 'sync' }}
           SYNC_DATE: ${{ github.event.inputs.date || '' }}
+          PLACE_DATE: ${{ github.event.inputs.date || '' }}
+          PLACE_MODE: ${{ github.event.inputs.place_mode || 'review' }}
+          ORDER: ${{ github.event.inputs.order || '' }}
         run: npm run sync
+      - name: Upload order screenshots (placement runs)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: order-screenshots
+          path: scraper/order-*.png
+          if-no-files-found: ignore
