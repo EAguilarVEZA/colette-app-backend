@@ -9,6 +9,10 @@ on:
         description: 'sync (default) or reset (one-time: zero all inventory)'
         required: false
         default: 'sync'
+      date:
+        description: 'Delivery date to sync (M/D/YYYY). Blank = today ET.'
+        required: false
+        default: ''
 
 jobs:
   sync:
@@ -32,4 +36,5 @@ jobs:
           BACKEND_URL: ${{ secrets.BACKEND_URL }}
           SYNC_SECRET: ${{ secrets.SYNC_SECRET }}
           TASK: ${{ github.event.inputs.task || 'sync' }}
+          SYNC_DATE: ${{ github.event.inputs.date || '' }}
         run: npm run sync
