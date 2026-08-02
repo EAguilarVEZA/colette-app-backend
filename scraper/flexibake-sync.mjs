@@ -53,15 +53,29 @@ const run = async () => {
         await page.getByRole('link', { name: 'Login', exact: true }).first().click();
       }),
     ]);
-    await page.waitForLoadState('networkidle').catch(() => {});
+    await page.waitForLoadState('domcontentloaded').catch(() => {});
+    await page.waitForTimeout(1500); // let the post-login redirect settle
     log('Logged in as', USER);
+
+    // Robust open of the orders list — ASP.NET pages abort on 'networkidle',
+    // and the post-login redirect can collide with navigation, so retry.
+    const openOrders = async () => {
+      for (let i = 0; i < 3; i++) {
+        try {
+          await page.goto(`${BASE}/FBWSOrders.aspx`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+          await page.getByText('This Month', { exact: false }).first().click().catch(() => {});
+          await page.waitForLoadState('domcontentloaded').catch(() => {});
+          await page.waitForTimeout(1000);
+          return;
+        } catch { await page.waitForTimeout(2000); }
+      }
+      throw new Error('Could not open FBWSOrders.aspx');
+    };
 
     // 2) Orders list — match orders by DELIVERY DATE (goods received that day
     // go into stock). Override with SYNC_DATE (M/D/YYYY) for a specific day.
     const targetDate = (process.env.SYNC_DATE || '').trim() || todayET;
-    await page.goto(`${BASE}/FBWSOrders.aspx`, { waitUntil: 'networkidle' });
-    await page.getByText('This Month', { exact: false }).first().click().catch(() => {});
-    await page.waitForLoadState('networkidle');
+    await openOrders();
 
     // Collect orders whose DELIVERY date == targetDate
     const rows = await page.locator('tr', { has: page.getByText('View', { exact: true }) }).all();
@@ -78,11 +92,10 @@ const run = async () => {
     // 3) Open each order and read line items
     const agg = {}; // code -> qty
     for (const orderNo of todays) {
-      await page.goto(`${BASE}/FBWSOrders.aspx`, { waitUntil: 'networkidle' });
-      await page.getByText('This Month', { exact: false }).first().click().catch(() => {});
-      await page.waitForLoadState('networkidle');
+      await openOrders();
       const rowLoc = page.locator('tr', { hasText: orderNo }).first();
-      await Promise.all([ page.waitForLoadState('networkidle'), rowLoc.getByText('View', { exact: true }).click() ]);
+      await Promise.all([ page.waitForLoadState('domcontentloaded').catch(() => {}), rowLoc.getByText('View', { exact: true }).click() ]);
+      await page.waitForTimeout(1000);
       // read item rows: code (first cell) + quantity (first input in row)
       const itemRows = await page.locator('tr').all();
       let count = 0;
