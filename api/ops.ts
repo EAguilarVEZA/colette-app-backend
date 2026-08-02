@@ -30,9 +30,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     switch (action) {
       case 'reorder-suggest': {
         if (req.method !== 'GET') return fail(res, 405, 'Use GET');
-        const days = Math.min(Number(req.query.days) || 120, 365);
-        const coverDays = Math.min(Number(req.query.coverDays || req.query.leadDays) || 3, 30);
-        return res.status(200).json({ ok: true, ...(await suggestReorder({ days, coverDays })) });
+        const days = Math.min(Number(req.query.days) || 365, 400);
+        // dow: 0=Sun..6=Sat; omit to use today (ET).
+        const dow = req.query.dow !== undefined ? Number(req.query.dow) : undefined;
+        return res.status(200).json({ ok: true, ...(await suggestReorder({ days, dow })) });
       }
       case 'customers-export': {
         if (req.method !== 'GET') return fail(res, 405, 'Use GET');
