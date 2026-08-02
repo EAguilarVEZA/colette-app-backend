@@ -261,6 +261,64 @@ export const ALON_MAP: Record<string, string> = {
 
 const normName = (s?: string) => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 
+// Alon wholesale unit COSTS (dollars) captured from the FlexiBake order form.
+// Keyed by Clover item name so we can write them into Clover's cost field.
+export const ALON_COST: Record<string, number> = {
+  'Almond Croissant': 2.39, 'Apple Vanilla Danish': 2.39, 'Blueberry Muffin': 2.07,
+  'Cheese Danish': 2.39, 'Chocolate Croissant': 2.39, 'Scone': 2.39,
+  'Gruyere Sesame Twist': 2.39, 'Hazelnut Chocolate Danish': 2.39, 'Kouign Amann': 3.09,
+  'Plain Croissant': 2.24, 'Mushroom And Fontina Cheese Quiche': 4.66,
+  'Spinach And Butternut Squash': 4.66, 'Raspberry Cheese Danish': 2.39,
+  'Twice-Baked Almond Croissant': 4.24,
+};
+
+// Price fixes (dollars) — items mispriced in Clover. Scone was $0 (losing money);
+// $7.95 gives ~70% margin on the $2.39 Alon cost (matches Gruyère Twist).
+export const PRICE_FIX: Record<string, number> = {
+  'Scone': 7.95,
+};
+
+// Write sell prices into Clover's item.price field (cents). Matches by name.
+export async function setItemPrices(prices?: Record<string, number>): Promise<any[]> {
+  const map = prices || PRICE_FIX;
+  const items = await listItems();
+  const byName = new Map(items.map((i) => [normName(i.name), i]));
+  const results: any[] = [];
+  for (const [name, dollars] of Object.entries(map)) {
+    const it = byName.get(normName(name));
+    if (!it) { results.push({ name, matched: false }); continue; }
+    const cents = Math.round(dollars * 100);
+    try {
+      await restFetch(`/items/${it.id}`, { method: 'POST', body: JSON.stringify({ price: cents }) });
+      results.push({ name, itemId: it.id, priceCents: cents, matched: true });
+    } catch (e: any) {
+      results.push({ name, itemId: it.id, error: e?.body ?? String(e) });
+    }
+  }
+  return results;
+}
+
+// Write unit costs into Clover's item.cost field (cents). Uses ALON_COST unless
+// an explicit map is passed. Matches by normalized item name.
+export async function setItemCosts(costs?: Record<string, number>): Promise<any[]> {
+  const map = costs || ALON_COST;
+  const items = await listItems();
+  const byName = new Map(items.map((i) => [normName(i.name), i]));
+  const results: any[] = [];
+  for (const [name, dollars] of Object.entries(map)) {
+    const it = byName.get(normName(name));
+    if (!it) { results.push({ name, matched: false }); continue; }
+    const cents = Math.round(dollars * 100);
+    try {
+      await restFetch(`/items/${it.id}`, { method: 'POST', body: JSON.stringify({ cost: cents }) });
+      results.push({ name, itemId: it.id, costCents: cents, matched: true });
+    } catch (e: any) {
+      results.push({ name, itemId: it.id, error: e?.body ?? String(e) });
+    }
+  }
+  return results;
+}
+
 // Light list of every item (id + name) — no expands, for stock ops.
 export async function listItems(): Promise<{ id: string; name: string }[]> {
   const out: { id: string; name: string }[] = [];
@@ -518,6 +576,71 @@ export async function suggestReorder(opts?: { days?: number; dow?: number }) {
     out.push({ code, product: cloverName, byDay, suggested: Math.round(avgTarget) });
   }
   return { historyDays: days, orderForDay: DOW[targetDow], note: 'per-weekday demand from ~1yr history; closed Mondays; ignores stock count', items: out };
+}
+
+// ---------- Smart reorder (trend + full-year weekday + year-over-year + buffer) ----------
+// Blends three signals for each Alon item on a target weekday:
+//   recent trend (last ~6 same weekdays) 50% · full-year weekday avg 30% · year-ago same weekday 20%
+// then adds a safety buffer and rounds up. Fresh-daily bread that sells out is lost revenue,
+// so we bias slightly high. Returns the breakdown per item for transparency in the UI.
+export async function suggestReorderSmart(opts?: { dow?: number; buffer?: number; days?: number }) {
+  const days = opts?.days ?? 365;
+  const buffer = typeof opts?.buffer === 'number' ? opts.buffer : 0.15;
+  const since = Date.now() - days * 86400000;
+  const round2 = (n: number) => Math.round(n * 100) / 100;
+  const codeFor = (name: string) => Object.entries(ALON_MAP).find(([, v]) => v === name)?.[0] || '';
+  const trackedNames = new Map<string, string>(); // normName -> Clover display name
+  for (const name of Object.values(ALON_MAP)) trackedNames.set(normName(name), name);
+  const perProduct = new Map<string, Map<string, number>>(); // normName -> (etDate -> units)
+  for (const k of trackedNames.keys()) perProduct.set(k, new Map());
+  const datesByDow: Set<string>[] = Array.from({ length: 7 }, () => new Set());
+
+  let offset = 0; const pageSize = 1000; let fetched = 0; const maxOrders = 40000;
+  while (fetched < maxOrders) {
+    const filter = encodeURIComponent(`createdTime>=${since}`);
+    const data = await restFetch(`/orders?expand=lineItems&filter=${filter}&limit=${pageSize}&offset=${offset}`);
+    const orders: any[] = data?.elements || [];
+    if (!orders.length) break;
+    for (const o of orders) {
+      const t = o.createdTime; if (!t) continue;
+      const dow = etWeekday(t); if (dow < 0) continue;
+      const d = etDate(t);
+      datesByDow[dow].add(d);
+      for (const li of (o.lineItems?.elements || [])) {
+        const key = normName(li.name || '');
+        const m = perProduct.get(key); if (!m) continue;
+        m.set(d, (m.get(d) || 0) + 1);
+      }
+    }
+    fetched += orders.length; offset += pageSize;
+    if (orders.length < pageSize) break;
+  }
+
+  const today = etWeekday(Date.now());
+  const targetDow = (typeof opts?.dow === 'number' && opts.dow >= 0 && opts.dow <= 6) ? opts.dow : today;
+  const dates = [...datesByDow[targetDow]].sort();       // ascending YYYY-MM-DD
+  const recentDates = dates.slice(-6);
+  const yoyTargetDate = etDate(Date.now() - 364 * 86400000);
+  let yoyDate: string | null = null; let best = Infinity;
+  for (const d of dates) { const diff = Math.abs(Date.parse(d) - Date.parse(yoyTargetDate)); if (diff < best) { best = diff; yoyDate = d; } }
+
+  const items = [...trackedNames].map(([key, name]) => {
+    const m = perProduct.get(key)!;
+    const on = (d: string) => m.get(d) || 0;
+    const recent = recentDates.length ? recentDates.reduce((s, d) => s + on(d), 0) / recentDates.length : 0;
+    const yearAvg = dates.length ? dates.reduce((s, d) => s + on(d), 0) / dates.length : 0;
+    const yoy = yoyDate ? on(yoyDate) : 0;
+    const blended = 0.5 * recent + 0.3 * yearAvg + 0.2 * yoy;
+    const suggested = Math.max(0, Math.ceil(blended * (1 + buffer)));
+    return { code: codeFor(name), product: name, recent: round2(recent), yearAvg: round2(yearAvg), yoy, blended: round2(blended), suggested };
+  }).sort((a, b) => b.suggested - a.suggested);
+
+  return {
+    orderForDay: DOW[targetDow], historyDays: days, buffer,
+    recentDatesUsed: recentDates, yearAgoDate: yoyDate,
+    note: 'blend: 50% recent same-weekday · 30% full-year weekday avg · 20% year-ago same weekday · +buffer, rounded up',
+    items,
+  };
 }
 
 // ---------- Sales summary (for the growth dashboard / daily brief) ----------
