@@ -36,6 +36,19 @@ const resetZero = async () => {
   log('Inventory reset complete — all items set to 0.');
 };
 
+// One-time (or occasional): write Alon wholesale unit costs into Clover item.cost.
+// Trigger via "Run workflow" with task=setcosts.
+const setCosts = async () => {
+  const r = await fetch(`${BACKEND}/api/ops`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'x-colette-secret': SECRET },
+    body: JSON.stringify({ action: 'set-costs' }),
+  });
+  const out = await r.json();
+  if (!r.ok || !out.ok) { console.error('Set-costs error:', JSON.stringify(out)); process.exit(1); }
+  log(`Costs written to Clover: matched ${out.matched}/${out.total}`);
+  for (const x of out.results) log('  ', x.matched ? `${x.name}: ${x.costCents}¢` : `UNMATCHED: ${x.name}`);
+};
+
 const run = async () => {
   const browser = await chromium.launch();
   const page = await browser.newPage();
@@ -139,5 +152,7 @@ const run = async () => {
   }
 };
 
-const main = process.env.TASK === 'reset' ? resetZero : run;
+const main = process.env.TASK === 'reset' ? resetZero
+  : process.env.TASK === 'setcosts' ? setCosts
+  : run;
 main().catch((e) => { console.error(e); process.exit(1); });
