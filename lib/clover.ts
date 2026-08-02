@@ -269,6 +269,17 @@ export const BOM: Record<string, string[]> = {
     'Dulce De Leche Croissant', 'Apricot Croissant', 'Latte E Nocciola Croissant',
     'Nutella Croissant', 'Ham/Cheese Croissant', 'Pistachio Croissant',
   ],
+  'Baguette': ['Ham/Cheese baguette'], // baguettes go into sandwiches or sold whole
+};
+
+// BASELINE — Colette's proven per-day standing order (read from the placed Alon
+// orders 2026-08-02; Tue = Wed = Sat identical → treated as a flat daily order).
+// Keyed by Alon code. Used as the ANCHOR/floor for the recommendation so we never
+// order below what's proven to work; sales/BOM add upside, the waste model trims.
+export const DAILY_BASELINE: Record<string, number> = {
+  '7152': 6, '7153': 3, '109108': 4, '7184': 3, '7156': 3, '7160': 8, '7163': 2,
+  '7164': 2, '12563': 4, '19347': 2, '795': 2, '4111': 2, '7171': 28,
+  '999997': 5, '999995': 5, '7176': 5, '0192': 5,
 };
 
 const normName = (s?: string) => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -672,11 +683,16 @@ export async function suggestReorderSmart(opts?: { dow?: number; buffer?: number
   };
 
   const items: any[] = [...trackedNames].map(([, name]) => {
+    const code = codeFor(name);
     const b = blend(seriesFor(name));
+    const salesCeil = Math.max(0, Math.ceil(b.blended * (1 + buffer)));
+    const baseline = DAILY_BASELINE[code];
+    // Anchor on the proven baseline (floor); let sales bump it upward when growing.
+    const suggested = baseline != null ? Math.max(baseline, salesCeil) : salesCeil;
     return {
-      code: codeFor(name), product: name,
+      code, product: name,
       recent: round2(b.recent), yearAvg: round2(b.yearAvg), yoy: b.yoy, blended: round2(b.blended),
-      suggested: Math.max(0, Math.ceil(b.blended * (1 + buffer))),
+      baseline: baseline ?? '—', sales: salesCeil, suggested,
       ...(BOM[name] ? { madeInto: BOM[name] } : {}),
     };
   });
