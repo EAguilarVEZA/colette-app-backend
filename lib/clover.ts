@@ -87,11 +87,36 @@ export interface MenuItem {
   category: string;
   available: boolean;
   modifierGroups: ModifierGroup[];   // options like milk, size, candle, flavours
+  tracked?: boolean;   // true if we maintain a real stock count (Alon wholesale items)
+  stock?: number;      // current Clover stock (only meaningful when tracked)
+  soldOut?: boolean;   // tracked item at/below zero → show as sold out
 }
 
 // Pull the live menu from Clover Inventory and shape it for the app — including
 // modifier groups so the website/app can offer the same options Clover knows about.
-export async function getMenu(): Promise<{ categories: string[]; items: MenuItem[] }> {
+// Bulk stock read (paged) → Map of itemId -> quantity. Best-effort; returns an
+// empty map if the merchant/token doesn't expose item_stocks.
+export async function getAllStocks(): Promise<Map<string, number>> {
+  const map = new Map<string, number>();
+  try {
+    let offset = 0; const page = 1000;
+    for (;;) {
+      const data = await restFetch(`/item_stocks?limit=${page}&offset=${offset}`);
+      const els: any[] = data?.elements || [];
+      for (const s of els) {
+        const id = s?.item?.id;
+        const qty = typeof s?.quantity === 'number' ? s.quantity
+          : (typeof s?.stockCount === 'number' ? s.stockCount : undefined);
+        if (id && typeof qty === 'number') map.set(id, qty);
+      }
+      if (els.length < page) break;
+      offset += page;
+    }
+  } catch { /* stock not available — caller falls back to availability flag */ }
+  return map;
+}
+
+export async function getMenu(opts?: { includeStock?: boolean }): Promise<{ categories: string[]; items: MenuItem[] }> {
   // Expand categories + nested modifier groups & their modifiers in one call.
   // NOTE: confirm nested-expand support on your plan; if modifiers come back empty,
   // fetch /item_modifier_groups/{id}?expand=modifiers per group instead.
@@ -124,6 +149,22 @@ export async function getMenu(): Promise<{ categories: string[]; items: MenuItem
         modifierGroups: groups,
       };
     });
+  // Optionally merge real stock. We only trust stock for the wholesale items we
+  // actually track (ALON_MAP) — every other item was zero-reset and its count is
+  // not meaningful, so those stay always-available.
+  if (opts?.includeStock) {
+    const trackedNames = new Set(Object.values(ALON_MAP).map((n) => normName(n)));
+    const stocks = await getAllStocks();
+    for (const it of items) {
+      const tracked = trackedNames.has(normName(it.name));
+      it.tracked = tracked;
+      if (tracked && stocks.has(it.id)) {
+        const q = stocks.get(it.id)!;
+        it.stock = q;
+        it.soldOut = q <= 0;
+      }
+    }
+  }
   const categories = [...new Set(items.map((i) => i.category))];
   return { categories, items };
 }
@@ -139,6 +180,8 @@ export async function createOrder(opts: {
   note?: string;
   customerName?: string;
   orderType?: string;
+  discounts?: { name: string; amountCents: number }[];
+  deliveryFeeCents?: number;
 }): Promise<{ orderId: string; raw: any }> {
   const lineItems = opts.lines.flatMap((l) =>
     Array.from({ length: Math.max(1, l.quantity) }, () => {
@@ -150,6 +193,11 @@ export async function createOrder(opts: {
       return li;
     })
   );
+  // Flat delivery fee as a custom (non-inventory) line item so it prints on the
+  // ticket and is included in Clover's authoritative order total.
+  if (opts.deliveryFeeCents && opts.deliveryFeeCents > 0) {
+    lineItems.push({ name: 'Delivery', price: Math.round(opts.deliveryFeeCents) } as any);
+  }
   const orderCart: any = {
     orderCart: {
       lineItems,
@@ -157,6 +205,14 @@ export async function createOrder(opts: {
       note: opts.note || (opts.customerName ? `App order — ${opts.customerName}` : 'App order'),
     },
   };
+  // Order-level discounts (e.g. BOGO crêpe). Clover expects a negative "amount"
+  // in cents; the returned order total already reflects it, so we still charge raw.total.
+  if (opts.discounts && opts.discounts.length) {
+    orderCart.orderCart.discounts = opts.discounts.map((d) => ({
+      name: d.name,
+      amount: -Math.abs(d.amountCents),
+    }));
+  }
   const raw = await restFetch('/atomic_order/orders', {
     method: 'POST',
     body: JSON.stringify(orderCart),
@@ -292,6 +348,69 @@ export async function findLead(email?: string, phone?: string): Promise<any | nu
   return null;
 }
 
+// ---------- BOGO crêpe tripwire (one redemption per customer) ----------
+export const BOGO_CODE = 'COLETTEBOGO';
+const BOGO_MARK = 'BOGO_REDEEMED';
+
+// Find a customer (with metadata note) by email/phone — used to check/mark BOGO.
+export async function findCustomerWithNote(email?: string, phone?: string): Promise<any | null> {
+  const e = (email || '').trim().toLowerCase();
+  const p = digits(phone).slice(-10);
+  if (!e && !p) return null;
+  const data = await restFetch('/customers?expand=emailAddresses,phoneNumbers,metadata&limit=1000');
+  const list: any[] = data?.elements || [];
+  for (const c of list) {
+    const emails = (c.emailAddresses?.elements || []).map((x: any) => (x.emailAddress || '').trim().toLowerCase());
+    const phones = (c.phoneNumbers?.elements || []).map((x: any) => digits(x.phoneNumber).slice(-10));
+    if (e && emails.includes(e)) return c;
+    if (p && phones.includes(p)) return c;
+  }
+  return null;
+}
+
+export function hasRedeemedBogo(customer: any): boolean {
+  const note = customer?.metadata?.note || '';
+  return note.includes(BOGO_MARK);
+}
+
+// Stamp the customer's note so the BOGO can't be redeemed twice. Creates a
+// minimal customer record if none exists yet (so enforcement holds going forward).
+export async function markBogoRedeemed(opts: { customerId?: string; email?: string; phone?: string }): Promise<void> {
+  const stamp = `${BOGO_MARK}=Y at=${new Date().toISOString()}`;
+  if (opts.customerId) {
+    // Preserve any existing note.
+    let prior = '';
+    try { const c = await restFetch(`/customers/${opts.customerId}?expand=metadata`); prior = c?.metadata?.note || ''; } catch { /* ignore */ }
+    const note = prior ? `${prior} · ${stamp}` : stamp;
+    await restFetch(`/customers/${opts.customerId}`, { method: 'POST', body: JSON.stringify({ metadata: { note } }) });
+    return;
+  }
+  // No record yet — create one flagged as redeemed.
+  const body: any = { firstName: 'Web', metadata: { note: stamp } };
+  if (opts.email) body.emailAddresses = [{ emailAddress: opts.email.trim() }];
+  if (opts.phone) body.phoneNumbers = [{ phoneNumber: opts.phone.trim() }];
+  await restFetch('/customers', { method: 'POST', body: JSON.stringify(body) });
+}
+
+// Identify crêpe items in the current cart and return the cheapest crêpe's unit
+// price (cents). That amount becomes the "buy one get one free" discount.
+export async function crepeDiscountForCart(lines: CartLine[]): Promise<number> {
+  const { items } = await getMenu();
+  const byId = new Map(items.map((i) => [i.id, i]));
+  const isCrepe = (name?: string) => /cr[eê]pe/i.test(name || '');
+  let cheapest = 0;
+  let crepeUnits = 0;
+  for (const l of lines) {
+    const it = byId.get(l.itemId);
+    if (it && isCrepe(it.name)) {
+      crepeUnits += Math.max(1, l.quantity);
+      if (it.priceCents > 0 && (cheapest === 0 || it.priceCents < cheapest)) cheapest = it.priceCents;
+    }
+  }
+  // Need at least 2 crêpes in the cart (buy one, get one free).
+  return crepeUnits >= 2 ? cheapest : 0;
+}
+
 export async function createLead(opts: {
   email?: string; phone?: string; firstName?: string;
   emailConsent: boolean; smsConsent: boolean; source?: string;
@@ -399,6 +518,47 @@ export async function suggestReorder(opts?: { days?: number; dow?: number }) {
     out.push({ code, product: cloverName, byDay, suggested: Math.round(avgTarget) });
   }
   return { historyDays: days, orderForDay: DOW[targetDow], note: 'per-weekday demand from ~1yr history; closed Mondays; ignores stock count', items: out };
+}
+
+// ---------- Sales summary (for the growth dashboard / daily brief) ----------
+// Daily revenue + order count + AOV over a window, plus new-vs-repeat customers.
+export async function salesSummary(opts?: { days?: number; maxOrders?: number }) {
+  const days = opts?.days ?? 35;
+  const maxOrders = opts?.maxOrders ?? 20000;
+  const since = Date.now() - days * 86400000;
+  const byDate = new Map<string, { revenue: number; orders: number }>(); // etDate -> cents/orders
+  const custOrders = new Map<string, number>();  // customerId -> order count in window
+  let totalRevenue = 0, totalOrders = 0;
+  let offset = 0; const pageSize = 1000; let fetched = 0;
+  while (fetched < maxOrders) {
+    const filter = encodeURIComponent(`createdTime>=${since}`);
+    const data = await restFetch(`/orders?expand=customers&filter=${filter}&limit=${pageSize}&offset=${offset}`);
+    const orders: any[] = data?.elements || [];
+    if (!orders.length) break;
+    for (const o of orders) {
+      const t = o.createdTime; if (!t) continue;
+      const d = etDate(t);
+      const cents = typeof o.total === 'number' ? o.total : 0;
+      const cur = byDate.get(d) || { revenue: 0, orders: 0 };
+      cur.revenue += cents; cur.orders += 1; byDate.set(d, cur);
+      totalRevenue += cents; totalOrders += 1;
+      const cid = o.customers?.elements?.[0]?.id;
+      if (cid) custOrders.set(cid, (custOrders.get(cid) || 0) + 1);
+    }
+    fetched += orders.length; offset += pageSize;
+    if (orders.length < pageSize) break;
+  }
+  const daily = [...byDate.entries()].sort((a, b) => a[0] < b[0] ? -1 : 1)
+    .map(([date, v]) => ({ date, revenue: Math.round(v.revenue) / 100, orders: v.orders }));
+  const repeatCustomers = [...custOrders.values()].filter((n) => n > 1).length;
+  const knownCustomers = custOrders.size;
+  return {
+    days, totalRevenue: Math.round(totalRevenue) / 100, totalOrders,
+    aov: totalOrders ? Math.round((totalRevenue / totalOrders)) / 100 : 0,
+    daily, knownCustomers, repeatCustomers,
+    repeatRate: knownCustomers ? Math.round((repeatCustomers / knownCustomers) * 1000) / 10 : 0,
+    monthlyGoal: 100000,
+  };
 }
 
 // ---------- Best sellers (from order history) ----------
