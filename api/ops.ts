@@ -8,7 +8,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
   applyCors, assertConfigured, fail,
-  suggestReorder, suggestReorderSmart, getAllCustomers, receiveStock, resetStockZero, salesSummary, setItemCosts, setItemPrices, stockoutAnalysis,
+  suggestReorder, suggestReorderSmart, getAllCustomers, receiveStock, resetStockZero, salesSummary, setItemCosts, setItemPrices, stockoutAnalysis, getRecentOrders, notifyCustomer,
 } from '../lib/clover.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -87,6 +87,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const customers = await getAllCustomers();
         return res.status(200).json({ ok: true, count: customers.length, customers });
       }
+      case 'recent-orders': {
+        if (req.method !== 'GET') return fail(res, 405, 'Use GET');
+        if (!requireAuth()) return; // contains customer PII
+        const days = Math.min(Number(req.query.days) || 3, 14);
+        return res.status(200).json({ ok: true, orders: await getRecentOrders({ days }) });
+      }
+      case 'notify-customer': {
+        if (req.method !== 'POST') return fail(res, 405, 'Use POST');
+        if (!requireAuth()) return;
+        const phone = String(body?.phone || '');
+        const message = String(body?.message || '');
+        if (!message) return fail(res, 400, 'message required');
+        return res.status(200).json({ ok: true, ...(await notifyCustomer(phone, message)) });
+      }
       case 'set-costs': {
         if (req.method !== 'POST') return fail(res, 405, 'Use POST');
         if (!requireAuth()) return;
@@ -111,7 +125,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(200).json({ ok: true, done: r.nextOffset === null, ...r });
       }
       default:
-        return fail(res, 400, 'Unknown action. Use reorder-suggest | reorder-plan | stockout | metrics | place-order | set-costs | customers-export | inventory-receive | inventory-reset-zero');
+        return fail(res, 400, 'Unknown action. Use reorder-suggest | reorder-plan | stockout | metrics | place-order | set-costs | recent-orders | notify-customer | customers-export | inventory-receive | inventory-reset-zero');
     }
   } catch (e: any) {
     fail(res, e?.status || 502, `${action} failed`, e?.body ?? String(e));
