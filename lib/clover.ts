@@ -342,28 +342,63 @@ export async function getAllCustomers(): Promise<CustomerRow[]> {
   return rows;
 }
 
-// ---------- Reorder suggestions (Phase 2 brain) ----------
-// Pure DEMAND forecast from historical sales — deliberately ignores the current
-// (often negative/unreliable) stock count. suggested = ceil(avgPerDay * coverDays),
-// where avgPerDay is averaged over a multi-month window of real Clover sales.
-export async function suggestReorder(opts?: { days?: number; coverDays?: number }) {
-  const days = opts?.days ?? 120;        // ~4 months of history by default
-  const coverDays = opts?.coverDays ?? 3; // how many days each order should cover
-  // Page through up to ~20k orders in the window for a solid average.
-  const popular = await getPopular({ days, maxOrders: 20000 });
-  const soldByName = new Map(popular.map((p) => [normName(p.name), p.count]));
+// ---------- Reorder suggestions (Phase 2 brain) — BY DAY OF WEEK ----------
+// Bread is daily & perishable; the bakery is closed Mondays and takes a delivery
+// every other day. So we forecast each product's demand for a SPECIFIC weekday
+// from a full year of history (avg units sold on past Tuesdays for a Tuesday
+// order, etc.) and order exactly that — one day at a time. Ignores stock counts.
+const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const etWeekday = (ms: number) =>
+  DOW.indexOf(new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short' }).format(new Date(ms)));
+const etDate = (ms: number) =>
+  new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ms));
+
+// Aggregate line-item units by product AND weekday over the window, plus how many
+// distinct operating dates fell on each weekday (the denominator for the average).
+export async function getWeekdaySales(opts?: { days?: number; maxOrders?: number }) {
+  const days = opts?.days ?? 365;
+  const maxOrders = opts?.maxOrders ?? 40000;
+  const since = Date.now() - days * 86400000;
+  const unitsByName = new Map<string, number[]>();       // normName -> units[7]
+  const datesByDow: Set<string>[] = Array.from({ length: 7 }, () => new Set());
+  let offset = 0; const pageSize = 1000; let fetched = 0;
+  while (fetched < maxOrders) {
+    const filter = encodeURIComponent(`createdTime>=${since}`);
+    const data = await restFetch(`/orders?expand=lineItems&filter=${filter}&limit=${pageSize}&offset=${offset}`);
+    const orders: any[] = data?.elements || [];
+    if (!orders.length) break;
+    for (const o of orders) {
+      const t = o.createdTime; if (!t) continue;
+      const dow = etWeekday(t); if (dow < 0) continue;
+      datesByDow[dow].add(etDate(t));
+      for (const li of (o.lineItems?.elements || [])) {
+        const key = normName(li.name || ''); if (!key) continue;
+        if (!unitsByName.has(key)) unitsByName.set(key, [0, 0, 0, 0, 0, 0, 0]);
+        unitsByName.get(key)![dow] += 1;
+      }
+    }
+    fetched += orders.length; offset += pageSize;
+    if (orders.length < pageSize) break;
+  }
+  return { unitsByName, dowCounts: datesByDow.map((s) => s.size), days };
+}
+
+// Suggest the order for a given weekday (default = today, ET). Returns the full
+// weekly pattern per product plus the number to order for the target day.
+export async function suggestReorder(opts?: { days?: number; dow?: number }) {
+  const days = opts?.days ?? 365;
+  const { unitsByName, dowCounts } = await getWeekdaySales({ days });
+  const today = etWeekday(Date.now());
+  const targetDow = (typeof opts?.dow === 'number' && opts.dow >= 0 && opts.dow <= 6) ? opts.dow : today;
   const out: any[] = [];
   for (const [code, cloverName] of Object.entries(ALON_MAP)) {
-    const sold = soldByName.get(normName(cloverName)) || 0;
-    const avgPerDay = sold / days;
-    const suggested = Math.ceil(avgPerDay * coverDays);
-    out.push({
-      code, product: cloverName,
-      soldInWindow: sold, avgPerDay: Math.round(avgPerDay * 100) / 100,
-      coverDays, suggested,
-    });
+    const arr = unitsByName.get(normName(cloverName)) || [0, 0, 0, 0, 0, 0, 0];
+    const byDay: Record<string, number> = {};
+    DOW.forEach((n, i) => { byDay[n] = dowCounts[i] ? Math.round((arr[i] / dowCounts[i]) * 100) / 100 : 0; });
+    const avgTarget = dowCounts[targetDow] ? arr[targetDow] / dowCounts[targetDow] : 0;
+    out.push({ code, product: cloverName, byDay, suggested: Math.round(avgTarget) });
   }
-  return { windowDays: days, coverDays, note: 'demand-based; ignores current stock count', items: out };
+  return { historyDays: days, orderForDay: DOW[targetDow], note: 'per-weekday demand from ~1yr history; closed Mondays; ignores stock count', items: out };
 }
 
 // ---------- Best sellers (from order history) ----------
