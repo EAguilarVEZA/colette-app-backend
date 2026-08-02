@@ -45,11 +45,15 @@ const run = async () => {
     const user = page.locator('input:not([type="password"]):not([type="hidden"]):not([type="submit"]):not([type="button"])').first();
     await user.fill(USER);
     await page.locator('input[type="password"]').first().fill(PASS);
+    // Alon's "Login" is an <a> link (id ends with PB_EXIST_LOGON) that fires __doPostBack.
+    const loginLink = page.locator('[id$="PB_EXIST_LOGON"]').first();
     await Promise.all([
-      page.waitForLoadState('networkidle'),
-      page.getByRole('button', { name: /login/i }).first().click().catch(() =>
-        page.locator('input[type="submit"], button').filter({ hasText: /login/i }).first().click()),
+      page.waitForLoadState('networkidle').catch(() => {}),
+      loginLink.click({ timeout: 15000 }).catch(async () => {
+        await page.getByRole('link', { name: 'Login', exact: true }).first().click();
+      }),
     ]);
+    await page.waitForLoadState('networkidle').catch(() => {});
     log('Logged in as', USER);
 
     // 2) Orders list — match orders by DELIVERY DATE (goods received that day
