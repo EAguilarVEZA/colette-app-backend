@@ -95,19 +95,24 @@ const run = async () => {
       await openOrders();
       const rowLoc = page.locator('tr', { hasText: orderNo }).first();
       await Promise.all([ page.waitForLoadState('domcontentloaded').catch(() => {}), rowLoc.getByText('View', { exact: true }).click() ]);
-      await page.waitForTimeout(1000);
-      // read item rows: code (first cell) + quantity (first input in row)
-      const itemRows = await page.locator('tr').all();
-      let count = 0;
-      for (const ir of itemRows) {
-        const code = (await ir.locator('td').first().innerText().catch(() => '')).trim();
-        if (!/^\d+$/.test(code)) continue; // code cells are numeric
-        const qInput = ir.locator('input[type="text"], input:not([type])').first();
-        const val = await qInput.inputValue().catch(() => '');
-        const qty = parseFloat((val || '').replace(/[^0-9.]/g, ''));
-        if (qty > 0) { agg[code] = (agg[code] || 0) + qty; count++; }
-      }
-      log(`  Order ${orderNo}: ${count} line(s)`);
+      await page.waitForTimeout(1500);
+      // Read the whole order table in ONE browser call (fast, can't hang):
+      // each row's first cell = product CODE, first input = QUANTITY.
+      const lineItems = await page.evaluate(() => {
+        const out = [];
+        document.querySelectorAll('tr').forEach((tr) => {
+          const tds = tr.querySelectorAll('td');
+          if (!tds.length) return;
+          const code = (tds[0].innerText || '').trim();
+          if (!/^\d+$/.test(code)) return; // code cells are numeric
+          const inp = tr.querySelector('input');
+          const qty = parseFloat(String(inp ? inp.value : '').replace(/[^0-9.]/g, ''));
+          if (qty > 0) out.push({ code, qty });
+        });
+        return out;
+      });
+      for (const li of lineItems) agg[li.code] = (agg[li.code] || 0) + li.qty;
+      log(`  Order ${orderNo}: ${lineItems.length} line(s)`);
     }
 
     const lines = Object.entries(agg).map(([code, qty]) => ({ code, qty }));
