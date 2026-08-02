@@ -11,7 +11,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (missing.length) return fail(res, 500, 'Missing env vars', missing);
 
   try {
-    const menu = await getMenu();
+    const includeStock = req.query?.stock === '1' || req.query?.stock === 'true';
+    const menu = await getMenu({ includeStock });
     // cache at the edge for 60s so we don't hammer Clover on every app open
     res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate=300');
     res.status(200).json({ ok: true, ...menu });

@@ -8,7 +8,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
   applyCors, assertConfigured, fail,
-  suggestReorder, getAllCustomers, receiveStock, resetStockZero,
+  suggestReorder, getAllCustomers, receiveStock, resetStockZero, salesSummary,
 } from '../lib/clover.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -35,6 +35,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const dow = req.query.dow !== undefined ? Number(req.query.dow) : undefined;
         return res.status(200).json({ ok: true, ...(await suggestReorder({ days, dow })) });
       }
+      case 'metrics': {
+        if (req.method !== 'GET') return fail(res, 405, 'Use GET');
+        const days = Math.min(Number(req.query.days) || 35, 90);
+        res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=900');
+        return res.status(200).json({ ok: true, ...(await salesSummary({ days })) });
+      }
       case 'customers-export': {
         if (req.method !== 'GET') return fail(res, 405, 'Use GET');
         if (!requireAuth()) return;
@@ -58,7 +64,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(200).json({ ok: true, done: r.nextOffset === null, ...r });
       }
       default:
-        return fail(res, 400, 'Unknown action. Use reorder-suggest | customers-export | inventory-receive | inventory-reset-zero');
+        return fail(res, 400, 'Unknown action. Use reorder-suggest | metrics | customers-export | inventory-receive | inventory-reset-zero');
     }
   } catch (e: any) {
     fail(res, e?.status || 502, `${action} failed`, e?.body ?? String(e));

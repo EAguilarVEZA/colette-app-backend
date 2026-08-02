@@ -16,6 +16,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
   applyCors, assertConfigured, fail,
   createOrder, charge, printOrder, setOrderNote, type CartLine,
+  BOGO_CODE, findCustomerWithNote, hasRedeemedBogo, markBogoRedeemed, crepeDiscountForCart,
 } from '../lib/clover.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -41,12 +42,47 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const orderType = body?.orderType || undefined;
   const customerName = body?.customerName || undefined;
 
+  // Optional BOGO crêpe promo. Requires an email/phone to enforce one-per-customer,
+  // and at least two crêpes in the cart (buy one, get one free).
+  const promoCode = String(body?.promoCode || '').trim().toUpperCase();
+  const promoEmail = (body?.email || '').trim();
+  const promoPhone = (body?.phone || '').trim();
+  const discounts: { name: string; amountCents: number }[] = [];
+  let bogoCustomer: any = null;
+  let bogoApplied = false;
+  let bogoReason = '';
+  if (promoCode === BOGO_CODE) {
+    if (!promoEmail && !promoPhone) {
+      bogoReason = 'Add the email or phone from your Colette offer to use the BOGO crêpe.';
+    } else {
+      try {
+        bogoCustomer = await findCustomerWithNote(promoEmail, promoPhone);
+        if (bogoCustomer && hasRedeemedBogo(bogoCustomer)) {
+          bogoReason = 'This BOGO crêpe offer has already been used.';
+        } else {
+          const discountCents = await crepeDiscountForCart(lines);
+          if (discountCents > 0) {
+            discounts.push({ name: 'BOGO Crêpe (COLETTEBOGO)', amountCents: discountCents });
+            bogoApplied = true;
+          } else {
+            bogoReason = 'Add two crêpes to your cart to get one free.';
+          }
+        }
+      } catch { bogoReason = 'Could not validate the promo code; order placed without it.'; }
+    }
+  }
+
   // 1) Create the order (source of truth for the total).
   let orderId: string;
   let orderTotalCents = 0;
   try {
+    const deliveryFeeCents =
+      orderType === 'DELIVERY' && typeof body?.deliveryFeeCents === 'number'
+        ? body.deliveryFeeCents : 0;
     const { orderId: id, raw } = await createOrder({
       lines, note: body?.note, customerName, orderType,
+      discounts: discounts.length ? discounts : undefined,
+      deliveryFeeCents: deliveryFeeCents || undefined,
     });
     orderId = id;
     if (typeof raw?.total === 'number') orderTotalCents = raw.total;
@@ -85,7 +121,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     printed = false;
   }
 
-  res.status(200).json({ ok: true, orderId, paymentId, amountCents, printed });
+  // Payment succeeded — stamp the BOGO as redeemed so it can't be reused.
+  if (bogoApplied) {
+    try {
+      await markBogoRedeemed({ customerId: bogoCustomer?.id, email: promoEmail, phone: promoPhone });
+    } catch { /* non-fatal: order is already paid */ }
+  }
+
+  res.status(200).json({
+    ok: true, orderId, paymentId, amountCents, printed,
+    bogoApplied, ...(bogoReason ? { bogoReason } : {}),
+  });
 }
 
 function safeParse(s: string) { try { return JSON.parse(s); } catch { return null; } }
