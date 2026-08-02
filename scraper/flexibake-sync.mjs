@@ -236,6 +236,16 @@ const placeOrder = async () => {
       await page.waitForTimeout(1800);
     }
 
+    // Wait for the order form to fully load (ASP.NET postbacks navigate async) —
+    // don't touch the page until a product-code row is present.
+    await page.waitForURL('**/FBWSOpenOrder.aspx', { timeout: 20000 }).catch(() => {});
+    await page.waitForLoadState('domcontentloaded').catch(() => {});
+    await page.waitForFunction(
+      () => [...document.querySelectorAll('td')].some((td) => /^\d{3,}$/.test((td.innerText || '').trim())),
+      { timeout: 20000 },
+    ).catch(() => {});
+    await page.waitForTimeout(1000);
+
     // Fill the QUANTITY input (4th cell) for each matching product code.
     const filled = await page.evaluate((lines) => {
       const byCode = {}; for (const l of lines) byCode[String(l.code)] = l.qty;
