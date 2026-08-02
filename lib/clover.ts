@@ -679,19 +679,27 @@ export async function suggestReorderSmart(opts?: { dow?: number; buffer?: number
     const recent = recentDates.length ? recentDates.reduce((s, d) => s + on(d), 0) / recentDates.length : 0;
     const yearAvg = dates.length ? dates.reduce((s, d) => s + on(d), 0) / dates.length : 0;
     const yoy = yoyDate ? on(yoyDate) : 0;
-    return { recent, yearAvg, yoy, blended: 0.5 * recent + 0.3 * yearAvg + 0.2 * yoy };
+    // Demand variability on this weekday → safety stock (newsvendor: high-margin
+    // bakery items favor availability, so a ~85% service level, z≈1.04).
+    const vals = dates.map(on);
+    const mean = vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : 0;
+    const std = vals.length ? Math.sqrt(vals.reduce((s, v) => s + (v - mean) ** 2, 0) / vals.length) : 0;
+    return { recent, yearAvg, yoy, std, blended: 0.5 * recent + 0.3 * yearAvg + 0.2 * yoy };
   };
+  const Z = 1.04; // ~85% service level — margins are 60–70%, so bias toward not selling out
 
   const items: any[] = [...trackedNames].map(([, name]) => {
     const code = codeFor(name);
     const b = blend(seriesFor(name));
-    const salesCeil = Math.max(0, Math.ceil(b.blended * (1 + buffer)));
+    // Newsvendor safety stock = z·σ (waste-aware): volatile items get more cushion,
+    // steady items less — instead of a flat % buffer on everything.
+    const salesCeil = Math.max(0, Math.ceil(b.blended + Z * b.std));
     const baseline = DAILY_BASELINE[code];
-    // Anchor on the proven baseline (floor); let sales bump it upward when growing.
+    // Anchor on the proven baseline (floor); let sales+safety bump it up when growing.
     const suggested = baseline != null ? Math.max(baseline, salesCeil) : salesCeil;
     return {
       code, product: name,
-      recent: round2(b.recent), yearAvg: round2(b.yearAvg), yoy: b.yoy, blended: round2(b.blended),
+      recent: round2(b.recent), yearAvg: round2(b.yearAvg), yoy: b.yoy, blended: round2(b.blended), std: round2(b.std),
       baseline: baseline ?? '—', sales: salesCeil, suggested,
       ...(BOM[name] ? { madeInto: BOM[name] } : {}),
     };
@@ -701,10 +709,11 @@ export async function suggestReorderSmart(opts?: { dow?: number; buffer?: number
   for (const di of DERIVED_INGREDIENTS) {
     const on = (d: string) => di.sources.reduce((s, src) => s + (perProduct.get(normName(src))?.get(d) || 0), 0);
     const b = blend(on);
+    const need = b.blended + Z * b.std; // toasts needed (demand + safety)
     items.push({
       code: di.code, product: di.product,
-      recent: round2(b.recent), yearAvg: round2(b.yearAvg), yoy: b.yoy, blended: round2(b.blended),
-      suggested: b.blended > 0 ? Math.max(1, Math.ceil((b.blended * (1 + buffer)) / di.perUnit)) : 0,
+      recent: round2(b.recent), yearAvg: round2(b.yearAvg), yoy: b.yoy, blended: round2(b.blended), std: round2(b.std),
+      suggested: need > 0 ? Math.max(1, Math.ceil(need / di.perUnit)) : 0,
       derivedFrom: di.sources, perUnit: di.perUnit,
     });
   }
@@ -719,7 +728,7 @@ export async function suggestReorderSmart(opts?: { dow?: number; buffer?: number
   return {
     orderForDay: DOW[targetDow], historyDays: days, buffer,
     recentDatesUsed: recentDates, yearAgoDate: yoyDate,
-    note: 'blend: 50% recent same-weekday · 30% full-year weekday avg · 20% year-ago same weekday · +buffer, rounded up. Base items include products made from them (BOM), e.g. Plain Croissant + its filled/topped variants.',
+    note: 'Anchored on your proven baseline (floor); demand = 50% recent weekday · 30% year weekday · 20% year-ago + newsvendor safety stock (z·σ, ~85% service level). Base items include products made from them (BOM), e.g. Plain Croissant + its 6 variants; Baguette + sandwiches; Sourdough from toast.',
     items,
   };
 }
@@ -829,6 +838,53 @@ export async function stockoutAnalysis(opts?: { days?: number; gapMinutes?: numb
     note: 'soldoutRate = % of active days a product stopped selling ≥' + gapMin + 'min before the store\'s last sale (proxy for running out). High rate + high avgUnits + early avgLastSaleHour = candidate to stock more.',
     items: items.slice(0, 40),
   };
+}
+
+// ---------- Live orders (for the override / adjustment tab) ----------
+// Recent orders with line items + customer contact, flagging any line whose item
+// is currently sold out (tracked stock <= 0). PII → serve only behind the secret.
+export async function getRecentOrders(opts?: { days?: number; limit?: number }) {
+  const days = opts?.days ?? 3;
+  const limit = opts?.limit ?? 60;
+  const since = Date.now() - days * 86400000;
+  const filter = encodeURIComponent(`createdTime>=${since}`);
+  const data = await restFetch(`/orders?expand=lineItems,customers&filter=${filter}&limit=${limit}`);
+  const orders: any[] = data?.elements || [];
+  // Which tracked items are sold out right now?
+  const soldOut = new Set<string>();
+  try {
+    const [stocks, items] = await Promise.all([getAllStocks(), listItems()]);
+    const byId = new Map(items.map((i) => [i.id, i]));
+    const tracked = new Set(Object.values(ALON_MAP).map((n) => normName(n)));
+    for (const [id, q] of stocks) { const it = byId.get(id); if (it && tracked.has(normName(it.name)) && q <= 0) soldOut.add(normName(it.name)); }
+  } catch { /* stock optional */ }
+  const rows = orders.map((o) => {
+    const c = o.customers?.elements?.[0] || {};
+    const customer = [c.firstName, c.lastName].filter(Boolean).join(' ') || '';
+    const phone = c.phoneNumbers?.elements?.[0]?.phoneNumber || '';
+    const email = c.emailAddresses?.elements?.[0]?.emailAddress || '';
+    const lines = (o.lineItems?.elements || []).map((li: any) => ({ name: li.name, soldOut: soldOut.has(normName(li.name || '')) }));
+    return { id: o.id, createdTime: o.createdTime, total: (o.total || 0) / 100, note: o.note || '', orderType: o.orderType?.label || '', customer, phone, email, lines, hasSoldOut: lines.some((l: any) => l.soldOut) };
+  });
+  rows.sort((a, b) => (b.createdTime || 0) - (a.createdTime || 0));
+  return rows;
+}
+
+// Send a customer SMS (staff-initiated from the override tab). Uses Twilio when
+// configured; otherwise returns a not-configured flag so the UI can offer copy-to-send.
+export async function notifyCustomer(phone: string, message: string) {
+  const sid = process.env.TWILIO_SID, token = process.env.TWILIO_TOKEN, from = process.env.TWILIO_FROM;
+  if (!sid || !token || !from) return { sent: false, reason: 'SMS not configured (set TWILIO_SID / TWILIO_TOKEN / TWILIO_FROM)' };
+  if (!phone) return { sent: false, reason: 'No phone on file for this customer' };
+  const body = new URLSearchParams({ To: phone, From: from, Body: message });
+  const r = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
+    method: 'POST',
+    headers: { Authorization: 'Basic ' + Buffer.from(`${sid}:${token}`).toString('base64'), 'Content-Type': 'application/x-www-form-urlencoded' },
+    body,
+  });
+  const out: any = await r.json().catch(() => ({}));
+  if (!r.ok) return { sent: false, reason: out?.message || `HTTP ${r.status}` };
+  return { sent: true, sid: out.sid };
 }
 
 // ---------- Best sellers (from order history) ----------
