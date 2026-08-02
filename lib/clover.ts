@@ -684,6 +684,72 @@ export async function salesSummary(opts?: { days?: number; maxOrders?: number })
   };
 }
 
+// ---------- Stockout / lost-sales analysis ----------
+// Heuristic from order timestamps: for each product-day, find the last time it sold
+// vs. the store's last sale that day. If a product consistently STOPS selling well
+// before the store closes (while other items keep selling), it likely ran out —
+// a signal to stock more. Strongest for weekends. Going forward, real Clover stock
+// (from the daily sync) confirms true stockouts; this reconstructs history.
+export async function stockoutAnalysis(opts?: { days?: number; gapMinutes?: number }) {
+  const days = opts?.days ?? 120;
+  const gapMin = opts?.gapMinutes ?? 90;
+  const since = Date.now() - days * 86400000;
+  const prod = new Map<string, Map<string, { units: number; lastMs: number }>>();
+  const dayLast = new Map<string, number>();   // etDate -> store's last sale ms
+  const display = new Map<string, string>();
+  let offset = 0; const pageSize = 1000; let fetched = 0; const maxOrders = 30000;
+  while (fetched < maxOrders) {
+    const filter = encodeURIComponent(`createdTime>=${since}`);
+    const data = await restFetch(`/orders?expand=lineItems&filter=${filter}&limit=${pageSize}&offset=${offset}`);
+    const orders: any[] = data?.elements || [];
+    if (!orders.length) break;
+    for (const o of orders) {
+      const t = o.createdTime; if (!t) continue;
+      const d = etDate(t);
+      dayLast.set(d, Math.max(dayLast.get(d) || 0, t));
+      for (const li of (o.lineItems?.elements || [])) {
+        const key = normName(li.name || ''); if (!key) continue;
+        display.set(key, li.name);
+        if (!prod.has(key)) prod.set(key, new Map());
+        const m = prod.get(key)!; const cur = m.get(d) || { units: 0, lastMs: 0 };
+        cur.units += 1; cur.lastMs = Math.max(cur.lastMs, t); m.set(d, cur);
+      }
+    }
+    fetched += orders.length; offset += pageSize;
+    if (orders.length < pageSize) break;
+  }
+  const hourET = (ms: number) => {
+    const s = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(ms));
+    const [h, mi] = s.split(':').map(Number); return h + mi / 60;
+  };
+  const items: any[] = [];
+  for (const [key, m] of prod) {
+    let daysActive = 0, soldout = 0, unitsSum = 0, hourSum = 0, wkDays = 0, wkSoldout = 0;
+    for (const [d, rec] of m) {
+      daysActive++; unitsSum += rec.units; hourSum += hourET(rec.lastMs);
+      const dl = dayLast.get(d) || rec.lastMs;
+      const gap = (dl - rec.lastMs) / 60000;
+      const weekend = [0, 6].includes(new Date(d + 'T12:00:00').getDay());
+      if (weekend) wkDays++;
+      if (gap >= gapMin && rec.units >= 3) { soldout++; if (weekend) wkSoldout++; }
+    }
+    if (daysActive < 5) continue;
+    items.push({
+      product: display.get(key), daysActive,
+      avgUnitsPerDay: Math.round((unitsSum / daysActive) * 10) / 10,
+      avgLastSaleHour: Math.round((hourSum / daysActive) * 10) / 10,
+      soldoutRate: Math.round((soldout / daysActive) * 100),
+      weekendSoldoutRate: wkDays ? Math.round((wkSoldout / wkDays) * 100) : 0,
+    });
+  }
+  items.sort((a, b) => (b.soldoutRate + b.weekendSoldoutRate) - (a.soldoutRate + a.weekendSoldoutRate));
+  return {
+    days, gapMinutes: gapMin,
+    note: 'soldoutRate = % of active days a product stopped selling ≥' + gapMin + 'min before the store\'s last sale (proxy for running out). High rate + high avgUnits + early avgLastSaleHour = candidate to stock more.',
+    items: items.slice(0, 40),
+  };
+}
+
 // ---------- Best sellers (from order history) ----------
 export interface PopularItem { name: string; itemId?: string; count: number; revenue: number }
 
