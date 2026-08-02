@@ -257,9 +257,34 @@ export const ALON_MAP: Record<string, string> = {
   '999995': 'Spinach And Butternut Squash',
   '7176': 'Raspberry Cheese Danish',
   '0192': 'Twice-Baked Almond Croissant',
+  '109108': 'Baguette',
+  '12563': 'Dubai Chocolate Mousse (individual)',
+};
+
+// Bill of materials: finished products MADE FROM an Alon item. Their Clover sales
+// consume the base item, so true demand for the base = its own sales + these.
+// Plain croissants become the filled/topped croissant line-up.
+export const BOM: Record<string, string[]> = {
+  'Plain Croissant': [
+    'Dulce De Leche Croissant', 'Apricot Croissant', 'Latte E Nocciola Croissant',
+    'Nutella Croissant', 'Ham/Cheese Croissant', 'Pistachio Croissant',
+  ],
 };
 
 const normName = (s?: string) => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+// Ingredient items ordered on a fixed CADENCE (not sales-derivable yet).
+// byDow = units per delivery weekday (0=Sun … 6=Sat). Tunable.
+//  - Ciabatta 5oz: weekly sandwich-prep batch on Tuesday → 25 on Tue.
+export const INGREDIENTS: { code: string; product: string; byDow: number[] }[] = [
+  { code: '5509151', product: 'Ciabatta, 5oz', byDow: [0, 0, 25, 0, 0, 0, 0] }, // Tue sandwich prep (25/wk)
+];
+
+// DERIVED ingredients — sized from actual sales of the finished items they go into.
+// Sourdough boule: from Salmon + Avocado Toast; ~10 toasts per boule (tune yield).
+export const DERIVED_INGREDIENTS: { code: string; product: string; sources: string[]; perUnit: number }[] = [
+  { code: '109132', product: 'Sourdough 1.5# Boule', sources: ['Salmon Toast', 'Avocado Toast'], perUnit: 10 },
+];
 
 // Alon wholesale unit COSTS (dollars) captured from the FlexiBake order form.
 // Keyed by Clover item name so we can write them into Clover's cost field.
@@ -269,7 +294,8 @@ export const ALON_COST: Record<string, number> = {
   'Gruyere Sesame Twist': 2.39, 'Hazelnut Chocolate Danish': 2.39, 'Kouign Amann': 3.09,
   'Plain Croissant': 2.24, 'Mushroom And Fontina Cheese Quiche': 4.66,
   'Spinach And Butternut Squash': 4.66, 'Raspberry Cheese Danish': 2.39,
-  'Twice-Baked Almond Croissant': 4.24,
+  'Twice-Baked Almond Croissant': 4.24, 'Baguette': 3.00,
+  'Dubai Chocolate Mousse (individual)': 4.84,
 };
 
 // Price fixes (dollars) — items mispriced in Clover. Scone was $0 (losing money);
@@ -593,6 +619,10 @@ export async function suggestReorderSmart(opts?: { dow?: number; buffer?: number
   for (const name of Object.values(ALON_MAP)) trackedNames.set(normName(name), name);
   const perProduct = new Map<string, Map<string, number>>(); // normName -> (etDate -> units)
   for (const k of trackedNames.keys()) perProduct.set(k, new Map());
+  // Also bucket BOM sources (finished products made from a base item) and derived-
+  // ingredient sources (toast → sourdough), so true demand includes them.
+  for (const srcs of Object.values(BOM)) for (const s of srcs) if (!perProduct.has(normName(s))) perProduct.set(normName(s), new Map());
+  for (const di of DERIVED_INGREDIENTS) for (const s of di.sources) if (!perProduct.has(normName(s))) perProduct.set(normName(s), new Map());
   const datesByDow: Set<string>[] = Array.from({ length: 7 }, () => new Set());
 
   let offset = 0; const pageSize = 1000; let fetched = 0; const maxOrders = 40000;
@@ -624,21 +654,56 @@ export async function suggestReorderSmart(opts?: { dow?: number; buffer?: number
   let yoyDate: string | null = null; let best = Infinity;
   for (const d of dates) { const diff = Math.abs(Date.parse(d) - Date.parse(yoyTargetDate)); if (diff < best) { best = diff; yoyDate = d; } }
 
-  const items = [...trackedNames].map(([key, name]) => {
-    const m = perProduct.get(key)!;
-    const on = (d: string) => m.get(d) || 0;
+  // Demand series for a base item = its own sales + any BOM sources made from it.
+  const seriesFor = (name: string) => {
+    const base = perProduct.get(normName(name)) || new Map<string, number>();
+    const srcKeys = (BOM[name] || []).map(normName);
+    return (d: string) => {
+      let v = base.get(d) || 0;
+      for (const sk of srcKeys) v += perProduct.get(sk)?.get(d) || 0;
+      return v;
+    };
+  };
+  const blend = (on: (d: string) => number) => {
     const recent = recentDates.length ? recentDates.reduce((s, d) => s + on(d), 0) / recentDates.length : 0;
     const yearAvg = dates.length ? dates.reduce((s, d) => s + on(d), 0) / dates.length : 0;
     const yoy = yoyDate ? on(yoyDate) : 0;
-    const blended = 0.5 * recent + 0.3 * yearAvg + 0.2 * yoy;
-    const suggested = Math.max(0, Math.ceil(blended * (1 + buffer)));
-    return { code: codeFor(name), product: name, recent: round2(recent), yearAvg: round2(yearAvg), yoy, blended: round2(blended), suggested };
-  }).sort((a, b) => b.suggested - a.suggested);
+    return { recent, yearAvg, yoy, blended: 0.5 * recent + 0.3 * yearAvg + 0.2 * yoy };
+  };
 
+  const items: any[] = [...trackedNames].map(([, name]) => {
+    const b = blend(seriesFor(name));
+    return {
+      code: codeFor(name), product: name,
+      recent: round2(b.recent), yearAvg: round2(b.yearAvg), yoy: b.yoy, blended: round2(b.blended),
+      suggested: Math.max(0, Math.ceil(b.blended * (1 + buffer))),
+      ...(BOM[name] ? { madeInto: BOM[name] } : {}),
+    };
+  });
+
+  // Derived ingredients (e.g., sourdough boule from Salmon + Avocado Toast sales).
+  for (const di of DERIVED_INGREDIENTS) {
+    const on = (d: string) => di.sources.reduce((s, src) => s + (perProduct.get(normName(src))?.get(d) || 0), 0);
+    const b = blend(on);
+    items.push({
+      code: di.code, product: di.product,
+      recent: round2(b.recent), yearAvg: round2(b.yearAvg), yoy: b.yoy, blended: round2(b.blended),
+      suggested: b.blended > 0 ? Math.max(1, Math.ceil((b.blended * (1 + buffer)) / di.perUnit)) : 0,
+      derivedFrom: di.sources, perUnit: di.perUnit,
+    });
+  }
+
+  // Fixed-cadence ingredients (e.g., ciabatta 25 on Tuesdays).
+  for (const ing of INGREDIENTS) {
+    const q = ing.byDow[targetDow] || 0;
+    if (q > 0) items.push({ code: ing.code, product: ing.product, recent: '—', yearAvg: '—', yoy: '—', blended: '—', suggested: q, cadence: true });
+  }
+
+  items.sort((a, b) => b.suggested - a.suggested);
   return {
     orderForDay: DOW[targetDow], historyDays: days, buffer,
     recentDatesUsed: recentDates, yearAgoDate: yoyDate,
-    note: 'blend: 50% recent same-weekday · 30% full-year weekday avg · 20% year-ago same weekday · +buffer, rounded up',
+    note: 'blend: 50% recent same-weekday · 30% full-year weekday avg · 20% year-ago same weekday · +buffer, rounded up. Base items include products made from them (BOM), e.g. Plain Croissant + its filled/topped variants.',
     items,
   };
 }
