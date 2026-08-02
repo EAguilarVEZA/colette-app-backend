@@ -52,28 +52,30 @@ const run = async () => {
     ]);
     log('Logged in as', USER);
 
-    // 2) Orders list — broaden to This Week, then filter to today's orders
+    // 2) Orders list — match orders by DELIVERY DATE (goods received that day
+    // go into stock). Override with SYNC_DATE (M/D/YYYY) for a specific day.
+    const targetDate = (process.env.SYNC_DATE || '').trim() || todayET;
     await page.goto(`${BASE}/FBWSOrders.aspx`, { waitUntil: 'networkidle' });
-    await page.getByText('This Week', { exact: false }).first().click().catch(() => {});
+    await page.getByText('This Month', { exact: false }).first().click().catch(() => {});
     await page.waitForLoadState('networkidle');
 
-    // Collect (orderNo, orderDate) for rows dated today
+    // Collect orders whose DELIVERY date == targetDate
     const rows = await page.locator('tr', { has: page.getByText('View', { exact: true }) }).all();
     const todays = [];
     for (const r of rows) {
       const cells = await r.locator('td').allInnerTexts();
       const orderNo = (cells[0] || '').trim();
-      const orderDate = (cells[1] || '').trim();
-      if (orderNo && orderDate === todayET) todays.push(orderNo);
+      const deliveryDate = (cells[2] || '').trim();
+      if (orderNo && deliveryDate === targetDate) todays.push(orderNo);
     }
-    log(`Today (${todayET}): ${todays.length} order(s) →`, todays.join(', ') || 'none');
-    if (!todays.length) { log('Nothing to sync.'); await browser.close(); return; }
+    log(`Delivery ${targetDate}: ${todays.length} order(s) →`, todays.join(', ') || 'none');
+    if (!todays.length) { log('Nothing to sync for that delivery date.'); await browser.close(); return; }
 
     // 3) Open each order and read line items
     const agg = {}; // code -> qty
     for (const orderNo of todays) {
       await page.goto(`${BASE}/FBWSOrders.aspx`, { waitUntil: 'networkidle' });
-      await page.getByText('This Week', { exact: false }).first().click().catch(() => {});
+      await page.getByText('This Month', { exact: false }).first().click().catch(() => {});
       await page.waitForLoadState('networkidle');
       const rowLoc = page.locator('tr', { hasText: orderNo }).first();
       await Promise.all([ page.waitForLoadState('networkidle'), rowLoc.getByText('View', { exact: true }).click() ]);
