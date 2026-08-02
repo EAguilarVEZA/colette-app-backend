@@ -8,7 +8,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
   applyCors, assertConfigured, fail,
-  suggestReorder, suggestReorderSmart, getAllCustomers, receiveStock, resetStockZero, salesSummary, setItemCosts, setItemPrices,
+  suggestReorder, suggestReorderSmart, getAllCustomers, receiveStock, resetStockZero, salesSummary, setItemCosts, setItemPrices, stockoutAnalysis,
 } from '../lib/clover.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -42,6 +42,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const buffer = req.query.buffer !== undefined ? Number(req.query.buffer) : undefined;
         res.setHeader('Cache-Control', 's-maxage=600, stale-while-revalidate=1800');
         return res.status(200).json({ ok: true, ...(await suggestReorderSmart({ days, dow, buffer })) });
+      }
+      case 'stockout': {
+        if (req.method !== 'GET') return fail(res, 405, 'Use GET');
+        const days = Math.min(Number(req.query.days) || 120, 365);
+        const gap = req.query.gap !== undefined ? Number(req.query.gap) : undefined;
+        res.setHeader('Cache-Control', 's-maxage=600, stale-while-revalidate=1800');
+        return res.status(200).json({ ok: true, ...(await stockoutAnalysis({ days, gapMinutes: gap })) });
       }
       case 'metrics': {
         if (req.method !== 'GET') return fail(res, 405, 'Use GET');
@@ -103,7 +110,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(200).json({ ok: true, done: r.nextOffset === null, ...r });
       }
       default:
-        return fail(res, 400, 'Unknown action. Use reorder-suggest | reorder-plan | metrics | place-order | set-costs | customers-export | inventory-receive | inventory-reset-zero');
+        return fail(res, 400, 'Unknown action. Use reorder-suggest | reorder-plan | stockout | metrics | place-order | set-costs | customers-export | inventory-receive | inventory-reset-zero');
     }
   } catch (e: any) {
     fail(res, e?.status || 502, `${action} failed`, e?.body ?? String(e));
