@@ -168,13 +168,31 @@
   .availgrid .arow select{flex:1;padding:9px}
   .availgrid .arow input{flex:1;padding:9px}
   .danger{color:var(--red);background:var(--red-soft)}
+
+  /* login */
+  #login{position:fixed;inset:0;background:var(--bg);z-index:100;display:none;
+    align-items:center;justify-content:center;padding:24px}
+  .loginbox{max-width:340px;width:100%;text-align:center}
+  .loginbox .bigcup{font-size:54px}
+  .loginbox h1{font-size:22px;font-weight:800;margin:8px 0 2px}
+  .loginbox .sub{color:var(--ink2);font-weight:700;font-size:12px;letter-spacing:.6px;
+    text-transform:uppercase;margin-bottom:28px}
+  .loginbox label{display:block;font-size:12px;font-weight:800;color:var(--ink2);
+    text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px}
+  .loginbox input{width:100%;border:1px solid var(--line);border-radius:14px;padding:14px;
+    font-size:24px;text-align:center;letter-spacing:10px;background:var(--card);
+    color:var(--ink);margin-bottom:12px;font-family:inherit}
+  .loginbox input.adm{font-size:15px;letter-spacing:0;text-align:left}
+  .loginbox .btn{width:100%}
+  .loginbox .swap{display:block;margin-top:18px;color:var(--accent);font-weight:700;
+    font-size:13.5px;cursor:pointer}
 </style>
 </head>
 <body>
 <div id="app">
   <header class="top">
     <div class="brand"><span class="cup">🥐</span><span>Colette<small>FRENCH PASTRIES · CREW SCHEDULER</small></span></div>
-    <button class="pill" onclick="exportData()">💾 Save</button>
+    <span id="hdrbtns" style="display:flex;gap:8px"></span>
   </header>
   <main id="main"></main>
   <nav class="bottom">
@@ -187,6 +205,7 @@
   <div class="overlay" id="overlay" onclick="if(event.target===this)closeSheet()">
     <div class="sheet" id="sheet"></div>
   </div>
+  <div id="login"></div>
   <div class="toast" id="toast"></div>
   <input type="file" id="importFile" accept=".json" style="display:none" onchange="importData(this)">
 </div>
@@ -200,13 +219,15 @@ let S={
     address:'2225 Old Milton Pkwy, Suite 100, Alpharetta, GA 30009',
     lat:34.070187, lng:-84.292770, radius:150},   // geofence radius in meters
   punches:[],   // {id,empId,date:'YYYY-MM-DD',in:ISO,out:ISO|null,inDist,outDist}
+  auth:{adminId:'edgar',
+    adminHash:'c876a763127581e553256770526722eaddfc01b5d86996c47fda8b033005ba62'},
   employees:[
-    e0('Maya',   'Shift Lead','555-0101',19,0),
-    e0('Jordan', 'Barista',   '555-0102',16,1),
-    e0('Sam',    'Barista',   '555-0103',16,2),
-    e0('Priya',  'Barista',   '555-0104',16.5,3),
-    e0('Diego',  'Shift Lead','555-0105',18.5,4),
-    e0('Lily',   'Barista',   '555-0106',15.5,5),
+    e0('Maya',   'Shift Lead','555-0101',19,0,'2314'),
+    e0('Jordan', 'Barista',   '555-0102',16,1,'5872'),
+    e0('Sam',    'Barista',   '555-0103',16,2,'1946'),
+    e0('Priya',  'Barista',   '555-0104',16.5,3,'7203'),
+    e0('Diego',  'Shift Lead','555-0105',18.5,4,'4651'),
+    e0('Lily',   'Barista',   '555-0106',15.5,5,'8390'),
   ],
   templates:[
     {name:'Open', start:'06:30', end:'12:30'},
@@ -223,10 +244,114 @@ let S={
   meId:null,
   nextId:1,
 };
-function e0(name,role,phone,wage,ci){
-  return {id:'e'+ci, name, role, phone, wage,
+function e0(name,role,phone,wage,ci,pin){
+  return {id:'e'+ci, name, role, phone, wage, pin:pin||'',
     color:COLORS[ci%COLORS.length],
     avail:Array.from({length:7},()=>({type:'any'}))};
+}
+
+/* ================= AUTH & SESSION ================= */
+let sess=null;   // {type:'admin'} | {type:'emp', empId}
+function isAdmin(){return !!sess&&sess.type==='admin'}
+const LS_STATE='colette_state', LS_SESS='colette_sess';
+function lsGet(k){try{return localStorage.getItem(k)}catch{return null}}
+function lsSet(k,v){try{localStorage.setItem(k,v)}catch{}}
+function lsDel(k){try{localStorage.removeItem(k)}catch{}}
+async function sha256(t){
+  try{
+    const b=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(t));
+    return [...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join('');
+  }catch{
+    let h=5381;for(const c of t)h=((h*33)^c.charCodeAt(0))>>>0;return 'x'+h.toString(16);
+  }
+}
+function renderLogin(){
+  document.getElementById('login').innerHTML=`<div class="loginbox">
+    <div class="bigcup">🥐</div><h1>${S.shopName}</h1><div class="sub">Crew Scheduler</div>
+    <div id="pinmode">
+      <label>Enter your 4-digit PIN</label>
+      <input id="pinin" inputmode="numeric" maxlength="4" autocomplete="off"
+        oninput="if(this.value.length===4)pinLogin()">
+      <button class="btn green" onclick="pinLogin()">☕ Let's go</button>
+      <span class="swap" onclick="swapLogin(true)">I'm the admin →</span>
+    </div>
+    <div id="adminmode" style="display:none">
+      <label>Admin login</label>
+      <input class="adm" id="aid" placeholder="Admin ID" autocomplete="off">
+      <input class="adm" id="apw" type="password" placeholder="Password"
+        onkeydown="if(event.key==='Enter')adminLogin()">
+      <button class="btn primary" onclick="adminLogin()">🔑 Log in as admin</button>
+      <span class="swap" onclick="swapLogin(false)">← Back to PIN</span>
+    </div>
+  </div>`;
+}
+function swapLogin(admin){
+  document.getElementById('pinmode').style.display=admin?'none':'block';
+  document.getElementById('adminmode').style.display=admin?'block':'none';
+}
+function pinLogin(){
+  const p=(document.getElementById('pinin').value||'').trim();
+  const e=S.employees.find(x=>x.pin&&x.pin===p);
+  if(!e){toast('PIN not recognized — ask the admin for yours');
+    document.getElementById('pinin').value='';return}
+  sess={type:'emp',empId:e.id};S.meId=e.id;S.view='my';
+  lsSet(LS_SESS,JSON.stringify(sess));
+  render();toast(`Hey ${e.name} ☕`);
+}
+async function adminLogin(){
+  const id=(document.getElementById('aid').value||'').trim().toLowerCase();
+  const pw=document.getElementById('apw').value||'';
+  const h=await sha256('colette|'+pw);
+  if(id!==(S.auth.adminId||'').toLowerCase()||h!==S.auth.adminHash){
+    toast('Wrong admin ID or password');return}
+  sess={type:'admin'};S.view='sched';
+  lsSet(LS_SESS,JSON.stringify(sess));
+  render();toast('Welcome back, boss 👑');
+}
+function logout(){sess=null;S.meId=null;lsDel(LS_SESS);render()}
+function updateHdr(){
+  const h=document.getElementById('hdrbtns');
+  if(!sess){h.innerHTML='';return}
+  h.innerHTML=(isAdmin()
+    ?`<button class="pill" onclick="exportData()">💾 Save</button>
+      <button class="pill" onclick="openAdminSettings()">⚙️</button>`:'')+
+    `<button class="pill" onclick="logout()">↪ Out</button>`;
+}
+function openAdminSettings(){
+  const pins=S.employees.map(e=>
+    `<div class="hourrow"><span class="nm">${e.name}</span>
+     <span style="flex:1"></span><b>${e.pin||'— no PIN'}</b></div>`).join('');
+  sheet(`<h3>⚙️ Admin settings</h3>
+    <label>Employee PINs (edit in each profile)</label>
+    <div class="card">${pins}</div>
+    <label>Change admin login</label>
+    <input class="adm" id="cid" value="${S.auth.adminId}" placeholder="Admin ID"
+      style="width:100%;border:1px solid var(--line);border-radius:12px;padding:12px;font-size:15px;background:var(--card);margin-bottom:8px">
+    <input type="password" id="cur" placeholder="Current password"
+      style="width:100%;border:1px solid var(--line);border-radius:12px;padding:12px;font-size:15px;background:var(--card);margin-bottom:8px">
+    <input type="password" id="nw1" placeholder="New password (min 6 chars)"
+      style="width:100%;border:1px solid var(--line);border-radius:12px;padding:12px;font-size:15px;background:var(--card);margin-bottom:8px">
+    <input type="password" id="nw2" placeholder="Repeat new password"
+      style="width:100%;border:1px solid var(--line);border-radius:12px;padding:12px;font-size:15px;background:var(--card)">
+    <div class="rowbtns" style="margin-top:16px">
+      <button class="btn soft" onclick="closeSheet()">Cancel</button>
+      <button class="btn primary" onclick="saveAdmin()">Save changes</button>
+    </div>`);
+}
+async function saveAdmin(){
+  const cur=document.getElementById('cur').value||'';
+  const n1=document.getElementById('nw1').value||'';
+  const n2=document.getElementById('nw2').value||'';
+  const id=(document.getElementById('cid').value||'').trim();
+  if(!id){toast('Admin ID required');return}
+  if(await sha256('colette|'+cur)!==S.auth.adminHash){toast('Current password is wrong');return}
+  if(n1||n2){
+    if(n1.length<6){toast('New password too short (min 6)');return}
+    if(n1!==n2){toast('New passwords don’t match');return}
+    S.auth.adminHash=await sha256('colette|'+n1);
+  }
+  S.auth.adminId=id;
+  closeSheet();render();toast('Admin login updated 🔐');
 }
 function jsDay(){const d=new Date().getDay();return d===0?6:d-1}
 function monday(d){const x=new Date(d);const dow=x.getDay();const diff=(dow===0?-6:1-dow);
@@ -369,16 +494,28 @@ function runAuto(){
 }
 
 /* ================= RENDER ================= */
-function go(v){S.view=v;render()}
+const ADMIN_VIEWS=['team','texts','pay'];
+function go(v){if(!isAdmin()&&ADMIN_VIEWS.includes(v))return;S.view=v;render()}
 function render(){
+  updateHdr();
+  const login=document.getElementById('login');
+  const nav=document.querySelector('nav.bottom');
+  const m=document.getElementById('main');
+  if(!sess){login.style.display='flex';nav.style.display='none';m.innerHTML='';renderLogin();return}
+  login.style.display='none';nav.style.display='flex';
+  ADMIN_VIEWS.forEach(v=>document.getElementById('nav-'+v).style.display=isAdmin()?'flex':'none');
+  if(!isAdmin()){
+    if(ADMIN_VIEWS.includes(S.view))S.view='my';
+    S.meId=sess.empId;   // employees are locked to themselves
+  }
   ['sched','team','texts','pay','my'].forEach(v=>
     document.getElementById('nav-'+v).classList.toggle('active',S.view===v));
-  const m=document.getElementById('main');
   if(S.view==='sched')m.innerHTML=rSched();
   else if(S.view==='team')m.innerHTML=rTeam();
   else if(S.view==='texts')m.innerHTML=rTexts();
   else if(S.view==='pay')m.innerHTML=rPay();
   else m.innerHTML=rMy();
+  lsSet(LS_STATE,JSON.stringify(S));   // persist on the device (works when hosted)
 }
 function weekBar(){
   const w=week();
@@ -400,19 +537,20 @@ function rSched(){
     return `<button class="daytab ${i===S.selDay?'active':''} ${has?'hasshifts':''}" onclick="S.selDay=${i};render()">
       <div class="dn">${dn}</div><div class="dd">${dayDate(i).getDate()}</div><div class="dot"></div></button>`;
   }).join('');
+  const adm=isAdmin();
   const dayShifts=w.shifts.filter(s=>s.day===S.selDay).sort((a,b)=>a.start<b.start?-1:1);
   const list=dayShifts.length?dayShifts.map(s=>{
     const e=s.empId?emp(s.empId):null;
-    const issue=e?availIssue(e,s):null;
+    const issue=e&&adm?availIssue(e,s):null;
     return `<div class="shift">
       <div class="time"><b>${t12(s.start)}–${t12(s.end)}</b><span>${s.tpl||hrs(s).toFixed(1)+'h'}</span></div>
-      <button class="chip ${e?'':'unassigned'}" onclick="openAssign('${s.id}')">
+      <button class="chip ${e?'':'unassigned'}" ${adm?`onclick="openAssign('${s.id}')"`:'style="cursor:default"'}>
         ${e?`<span class="avatar" style="background:${e.color}">${initials(e.name)}</span>${e.name}
              ${s.confirmed?'<span class="confirmtag ok" style="margin-left:auto">✓</span>':''}
              ${issue?'<span class="warn" title="'+issue+'">⚠️</span>':''}`
-           :'+ Assign barista'}
+           :(adm?'+ Assign barista':'Open shift')}
       </button>
-      <button class="del" onclick="delShift('${s.id}')">✕</button>
+      ${adm?`<button class="del" onclick="delShift('${s.id}')">✕</button>`:''}
     </div>`;
   }).join(''):`<div class="empty">No shifts on ${DAYS[S.selDay]} yet</div>`;
 
@@ -431,15 +569,16 @@ function rSched(){
   return `${weekBar()}
     <div class="daytabs">${tabs}</div>
     <div class="card">${list}</div>
+    ${adm?`
     <button class="addshift" onclick="openAddShift()">+ Add shift to ${DAYS[S.selDay]} ${fmtD(dayDate(S.selDay))}</button>
     <button class="btn primary" style="width:100%;margin-bottom:10px" onclick="openAuto()">🤖 Auto-schedule the crew</button>
     <div class="rowbtns">
       <button class="btn soft" onclick="copyLastWeek()">⟳ Copy last week</button>
       <button class="btn primary" onclick="publishWeek()">📣 Publish ${w.published?'again':'week'}</button>
-    </div>
+    </div>`:''}
     <div class="stats">
       <div class="stat"><b>${totalH.toFixed(1)}</b><span>Hours</span></div>
-      <div class="stat"><b>$${Math.round(cost)}</b><span>Est. labor</span></div>
+      ${adm?`<div class="stat"><b>$${Math.round(cost)}</b><span>Est. labor</span></div>`:''}
       <div class="stat"><b style="${open?'color:var(--amber)':''}">${open}</b><span>Unfilled</span></div>
     </div>
     <h2 class="section">Hours by person</h2>
@@ -710,11 +849,13 @@ function rMy(){
       <div class="stats">
         <div class="stat"><b>${mine.length}</b><span>Shifts</span></div>
         <div class="stat"><b>${tot.toFixed(1)}</b><span>Hours</span></div>
-        <div class="stat"><b>$${Math.round(pay)}</b><span>Est. pay</span></div>
+        ${isAdmin()?`<div class="stat"><b>$${Math.round(pay)}</b><span>Est. pay</span></div>`:''}
       </div>`:''}`;
   }else body='<div class="empty">Tap your name to see your week ☝️</div>';
-  return `${weekBar()}<h2 class="section">Who are you?</h2>
-    <div class="whoami">${chips}</div>${body}`;
+  const picker=isAdmin()
+    ?`<h2 class="section">Who are you?</h2><div class="whoami">${chips}</div>`
+    :`<h2 class="section">Hey ${emp(S.meId)?emp(S.meId).name:''} 👋 — your week</h2>`;
+  return `${weekBar()}${picker}${body}`;
 }
 function confirmShift(id){const s=week().shifts.find(x=>x.id===id);
   s.confirmed=!s.confirmed;render()}
@@ -792,6 +933,7 @@ function openEmp(id){
       <button id="r0" class="${e.role==='Barista'?'sel':''}" onclick="pickRole(0)">Barista</button>
       <button id="r1" class="${e.role==='Shift Lead'?'sel':''}" onclick="pickRole(1)">Shift Lead</button></div>
     <label>Cell phone (for schedule texts)</label><input id="ep" value="${e.phone}" placeholder="555-0100" inputmode="tel">
+    <label>4-digit login PIN</label><input id="epin" value="${e.pin||''}" placeholder="e.g. 4217" inputmode="numeric" maxlength="4">
     <label>Hourly wage ($)</label><input id="ew" value="${e.wage}" inputmode="decimal">
     <label>Availability</label><div class="availgrid">${availRows}</div>
     <div class="rowbtns" style="margin-top:16px">
@@ -817,7 +959,10 @@ function saveEmp(id){
       ?{type:'custom',from:document.getElementById('af'+i).value,to:document.getElementById('ao'+i).value}
       :{type:t};
   });
-  const data={name,phone:document.getElementById('ep').value.trim(),
+  const pin=(document.getElementById('epin').value||'').trim();
+  if(pin&&!/^\d{4}$/.test(pin)){toast('PIN must be exactly 4 digits');return}
+  if(pin&&S.employees.some(e=>e.pin===pin&&e.id!==id)){toast('That PIN is taken — pick another');return}
+  const data={name,phone:document.getElementById('ep').value.trim(),pin,
     wage:parseFloat(document.getElementById('ew').value)||16,
     role:document.getElementById('r1').classList.contains('sel')?'Shift Lead':'Barista',avail};
   if(id)Object.assign(emp(id),data);
@@ -874,34 +1019,54 @@ function importData(inp){
   const r=new FileReader();
   r.onload=()=>{try{const d=JSON.parse(r.result);
     if(!d.employees||!d.weeks)throw 0;
-    S=d;S.weekStart=monday(new Date(S.weekStart));
-    S.sales=S.sales||{};S.textSpan=S.textSpan||1;S.paySpan=S.paySpan||1;
-    S.punches=S.punches||[];
-    S.location=S.location||{name:S.shopName,address:'',lat:34.070187,lng:-84.292770,radius:150};
+    S=normalizeState(d);
     render();toast('Data loaded ✓');
-  }catch{toast('That file does not look like BrewCrew data')}};
+  }catch{toast('That file does not look like scheduler data')}};
   r.readAsText(f);inp.value='';
 }
 
 function toast(msg){const t=document.getElementById('toast');t.textContent=msg;
   t.classList.add('show');clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove('show'),2600)}
 
-render();
+function normalizeState(d){
+  d.weekStart=monday(new Date());     // always open on the current week
+  d.sales=d.sales||{};d.textSpan=d.textSpan||1;d.paySpan=d.paySpan||1;
+  d.punches=d.punches||[];
+  d.location=d.location||{name:d.shopName,address:'',lat:34.070187,lng:-84.292770,radius:150};
+  d.auth=d.auth||{adminId:'edgar',
+    adminHash:'c876a763127581e553256770526722eaddfc01b5d86996c47fda8b033005ba62'};
+  d.employees.forEach(e=>{if(e.pin===undefined)e.pin=''});
+  d.nextId=d.nextId||1000;
+  d.selDay=jsDay();d.view=d.view||'sched';d.meId=null;
+  return d;
+}
 
-/* When hosted online, auto-load the published schedule (data.json in the same folder).
-   Locally (file://) this quietly does nothing and the app uses its built-in data. */
-fetch('data.json',{cache:'no-store'})
-  .then(r=>r.ok?r.json():null)
-  .then(d=>{
-    if(!d||!d.employees||!d.weeks)return;
-    S=d;
-    S.weekStart=monday(new Date());   // always open on the current week
-    S.sales=S.sales||{};S.textSpan=S.textSpan||1;S.paySpan=S.paySpan||1;
-    S.punches=S.punches||[];
-    S.location=S.location||{name:S.shopName,address:'',lat:34.070187,lng:-84.292770,radius:150};
-    S.view='sched';S.meId=null;S.selDay=jsDay();
-    render();toast('☁️ Live Colette schedule loaded');
-  }).catch(()=>{});
+/* ---- boot: device-saved data → published data.json → built-in sample ---- */
+(function boot(){
+  let usedLocal=false;
+  const raw=lsGet(LS_STATE);
+  if(raw){try{const d=JSON.parse(raw);
+    if(d.employees&&d.weeks){S=normalizeState(d);usedLocal=true}}catch{}}
+  const sraw=lsGet(LS_SESS);
+  if(sraw){try{const s0=JSON.parse(sraw);
+    if(s0.type==='admin'||(s0.type==='emp'&&emp(s0.empId)))sess=s0;
+    if(sess&&sess.type==='emp'){S.meId=sess.empId;S.view='my'}}catch{}}
+  render();
+  if(!usedLocal){
+    /* hosted: load the published schedule; on file:// this quietly does nothing */
+    fetch('data.json',{cache:'no-store'})
+      .then(r=>r.ok?r.json():null)
+      .then(d=>{
+        if(!d||!d.employees||!d.weeks)return;
+        S=normalizeState(d);
+        if(sess&&sess.type==='emp'){
+          if(!emp(sess.empId)){logout();return}
+          S.meId=sess.empId;S.view='my';
+        }
+        render();toast('☁️ Live Colette schedule loaded');
+      }).catch(()=>{});
+  }
+})();
 </script>
 </body>
 </html>
