@@ -1,0 +1,907 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Colette French Pastries — Crew Scheduler</title>
+<style>
+  :root{
+    --bg:#f6f1ea; --card:#ffffff; --ink:#332218; --ink2:#7a6a5d;
+    --accent:#a9622f; --accent-soft:#f3e3d3; --line:#e8ddd1;
+    --green:#3d7d4f; --green-soft:#e3f0e6; --red:#b0483a; --red-soft:#f7e5e2;
+    --amber:#9a7b1f; --amber-soft:#f6eecf;
+    --radius:14px; --shadow:0 1px 3px rgba(51,34,24,.08),0 4px 14px rgba(51,34,24,.06);
+  }
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+  html,body{height:100%}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    background:var(--bg); color:var(--ink); font-size:16px; line-height:1.45;
+  }
+  #app{max-width:520px;margin:0 auto;min-height:100%;display:flex;flex-direction:column;position:relative}
+  header.top{
+    padding:calc(14px + env(safe-area-inset-top)) 18px 12px;
+    display:flex;align-items:center;justify-content:space-between;gap:10px;
+  }
+  .brand{display:flex;align-items:center;gap:9px;font-weight:800;font-size:19px;letter-spacing:-.2px}
+  .brand .cup{font-size:22px}
+  .brand small{display:block;font-size:11px;font-weight:600;color:var(--ink2);letter-spacing:.4px}
+  .pill{border:none;background:var(--card);box-shadow:var(--shadow);border-radius:999px;
+    padding:8px 14px;font-size:13px;font-weight:700;color:var(--ink);cursor:pointer}
+  main{flex:1;padding:0 14px calc(96px + env(safe-area-inset-bottom))}
+  h2.section{font-size:14px;font-weight:800;color:var(--ink2);text-transform:uppercase;
+    letter-spacing:.8px;margin:18px 4px 10px}
+  .card{background:var(--card);border-radius:var(--radius);box-shadow:var(--shadow);padding:14px;margin-bottom:12px}
+
+  /* week bar */
+  .weekbar{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:4px 0 10px}
+  .weekbar .wk{font-weight:800;font-size:15px}
+  .weekbar .wk .pubtag{font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;margin-left:8px;vertical-align:2px}
+  .navbtn{width:38px;height:38px;border-radius:12px;border:none;background:var(--card);
+    box-shadow:var(--shadow);font-size:17px;font-weight:800;color:var(--accent);cursor:pointer}
+  .daytabs{display:flex;gap:5px;margin-bottom:12px}
+  .daytab{flex:1;border:none;background:var(--card);box-shadow:var(--shadow);border-radius:12px;
+    padding:8px 2px 7px;text-align:center;cursor:pointer;color:var(--ink)}
+  .daytab .dn{font-size:11px;font-weight:700;color:var(--ink2)}
+  .daytab .dd{font-size:15px;font-weight:800}
+  .daytab .dot{width:5px;height:5px;border-radius:50%;background:var(--accent);margin:3px auto 0;opacity:0}
+  .daytab.hasshifts .dot{opacity:1}
+  .daytab.active{background:var(--ink);color:#fff}
+  .daytab.active .dn{color:#d8c8bb}
+  .daytab.active .dot{background:#e8b98a}
+
+  /* shift cards */
+  .shift{display:flex;align-items:center;gap:12px;padding:12px 4px;border-bottom:1px solid var(--line)}
+  .shift:last-child{border-bottom:none}
+  .shift .time{min-width:86px}
+  .shift .time b{font-size:15px;display:block}
+  .shift .time span{font-size:12px;color:var(--ink2);font-weight:600}
+  .chip{flex:1;display:flex;align-items:center;gap:8px;border:none;background:var(--accent-soft);
+    border-radius:999px;padding:7px 12px;font-size:14px;font-weight:700;color:var(--ink);cursor:pointer;text-align:left}
+  .chip.unassigned{background:var(--amber-soft);color:var(--amber)}
+  .chip .avatar{width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+    font-size:12px;font-weight:800;color:#fff;flex-shrink:0}
+  .chip .warn{margin-left:auto;font-size:13px}
+  .shift .del{border:none;background:none;color:#c9b8a9;font-size:18px;cursor:pointer;padding:6px}
+  .confirmtag{font-size:10px;font-weight:800;letter-spacing:.3px;border-radius:6px;padding:2px 6px}
+  .ok{background:var(--green-soft);color:var(--green)} .pend{background:var(--amber-soft);color:var(--amber)}
+  .pub{background:var(--green-soft);color:var(--green)} .draft{background:var(--amber-soft);color:var(--amber)}
+
+  .addshift{width:100%;border:2px dashed var(--line);background:none;border-radius:var(--radius);
+    padding:13px;font-size:14px;font-weight:700;color:var(--accent);cursor:pointer;margin-bottom:12px}
+  .rowbtns{display:flex;gap:10px;margin:2px 0 12px}
+  .btn{flex:1;border:none;border-radius:12px;padding:13px;font-size:14px;font-weight:800;cursor:pointer}
+  .btn.primary{background:var(--ink);color:#fff}
+  .btn.soft{background:var(--card);box-shadow:var(--shadow);color:var(--ink)}
+  .btn.green{background:var(--green);color:#fff}
+  .btn.sm{padding:9px 12px;font-size:13px;flex:0 0 auto}
+
+  .stats{display:flex;gap:10px}
+  .stat{flex:1;background:var(--card);border-radius:var(--radius);box-shadow:var(--shadow);padding:12px;text-align:center}
+  .stat b{font-size:19px;display:block}
+  .stat span{font-size:11px;font-weight:700;color:var(--ink2);text-transform:uppercase;letter-spacing:.5px}
+  .hourrow{display:flex;align-items:center;gap:10px;padding:7px 2px;font-size:14px}
+  .hourrow .bar{flex:1;height:8px;border-radius:99px;background:var(--accent-soft);overflow:hidden}
+  .hourrow .bar i{display:block;height:100%;border-radius:99px}
+  .hourrow b{min-width:52px;text-align:right;font-size:13px}
+  .hourrow .nm{min-width:86px;font-weight:700;font-size:13px}
+
+  /* team */
+  .emp{display:flex;align-items:center;gap:12px;padding:13px 2px;border-bottom:1px solid var(--line);cursor:pointer}
+  .emp:last-child{border-bottom:none}
+  .emp .avatar{width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+    font-weight:800;color:#fff;font-size:15px;flex-shrink:0}
+  .emp .who b{display:block;font-size:15px}
+  .emp .who span{font-size:12.5px;color:var(--ink2);font-weight:600}
+  .emp .arr{margin-left:auto;color:#c9b8a9;font-size:18px}
+
+  /* texts */
+  .msgcard{background:var(--card);border-radius:var(--radius);box-shadow:var(--shadow);padding:14px;margin-bottom:12px}
+  .msgcard .mhead{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+  .msgcard .mhead .avatar{width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800;color:#fff;font-size:13px}
+  .msgcard .mhead b{font-size:15px}
+  .msgcard .mhead span{font-size:12px;color:var(--ink2);font-weight:600;display:block}
+  .bubble{background:#e9f2ea;border:1px solid #d3e4d6;border-radius:12px;padding:10px 12px;
+    font-size:13.5px;white-space:pre-wrap;margin-bottom:10px;color:#28422e}
+  .msgbtns{display:flex;gap:8px}
+  .msgbtns .btn{padding:10px;font-size:13px}
+  a.btnlink{flex:1;display:block;text-align:center;text-decoration:none;border-radius:12px;
+    padding:10px;font-size:13px;font-weight:800;background:var(--green);color:#fff}
+  .note{background:var(--amber-soft);border-radius:var(--radius);padding:12px 14px;font-size:13px;color:#6e5a1c;margin-bottom:12px}
+  .note b{display:block;margin-bottom:2px}
+
+  /* my week */
+  .myshift{display:flex;align-items:center;gap:12px;padding:13px 2px;border-bottom:1px solid var(--line)}
+  .myshift:last-child{border-bottom:none}
+  .myshift .dchip{min-width:52px;text-align:center;background:var(--accent-soft);border-radius:10px;padding:6px 4px}
+  .myshift .dchip b{display:block;font-size:16px}
+  .myshift .dchip span{font-size:10.5px;font-weight:800;color:var(--accent);text-transform:uppercase}
+  .myshift .info{flex:1}
+  .myshift .info b{display:block;font-size:14.5px}
+  .myshift .info span{font-size:12.5px;color:var(--ink2);font-weight:600}
+  .cbtn{border:none;border-radius:10px;padding:9px 13px;font-size:12.5px;font-weight:800;cursor:pointer;
+    background:var(--accent-soft);color:var(--accent)}
+  .cbtn.done{background:var(--green-soft);color:var(--green)}
+  .whoami{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
+  .whoami .pchip{border:none;border-radius:999px;padding:9px 15px;font-weight:700;font-size:13.5px;
+    background:var(--card);box-shadow:var(--shadow);cursor:pointer;color:var(--ink)}
+  .whoami .pchip.sel{background:var(--ink);color:#fff}
+
+  /* bottom nav */
+  nav.bottom{position:fixed;bottom:0;left:50%;transform:translateX(-50%);width:100%;max-width:520px;
+    background:rgba(255,255,255,.95);backdrop-filter:blur(10px);border-top:1px solid var(--line);
+    display:flex;padding:8px 6px calc(8px + env(safe-area-inset-bottom));z-index:40}
+  nav.bottom button{flex:1;border:none;background:none;cursor:pointer;padding:6px 0 2px;
+    font-size:10.5px;font-weight:700;color:var(--ink2);display:flex;flex-direction:column;align-items:center;gap:2px}
+  nav.bottom button .ic{font-size:20px}
+  nav.bottom button.active{color:var(--accent)}
+
+  /* sheet / modal */
+  .overlay{position:fixed;inset:0;background:rgba(30,18,10,.45);z-index:60;display:none;align-items:flex-end;justify-content:center}
+  .overlay.open{display:flex}
+  .sheet{background:var(--bg);width:100%;max-width:520px;border-radius:22px 22px 0 0;
+    padding:10px 16px calc(20px + env(safe-area-inset-bottom));max-height:86vh;overflow-y:auto}
+  .sheet .grab{width:40px;height:4px;border-radius:99px;background:#d5c7b8;margin:4px auto 14px}
+  .sheet h3{font-size:17px;font-weight:800;margin-bottom:12px}
+  .sheet label{display:block;font-size:12px;font-weight:800;color:var(--ink2);text-transform:uppercase;
+    letter-spacing:.5px;margin:12px 2px 6px}
+  .sheet input,.sheet select{width:100%;border:1px solid var(--line);border-radius:12px;padding:12px;
+    font-size:15px;background:var(--card);color:var(--ink);font-family:inherit}
+  .optrow{display:flex;gap:8px;flex-wrap:wrap}
+  .optrow button{border:1px solid var(--line);background:var(--card);border-radius:999px;
+    padding:9px 14px;font-size:13.5px;font-weight:700;cursor:pointer;color:var(--ink)}
+  .optrow button.sel{background:var(--ink);color:#fff;border-color:var(--ink)}
+  .pickemp{display:flex;align-items:center;gap:12px;width:100%;border:none;background:var(--card);
+    border-radius:12px;box-shadow:var(--shadow);padding:12px;margin-bottom:8px;cursor:pointer;text-align:left}
+  .pickemp .avatar{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800;color:#fff;font-size:13px}
+  .pickemp b{font-size:14.5px;display:block}
+  .pickemp span{font-size:12px;color:var(--ink2);font-weight:600}
+  .pickemp .right{margin-left:auto;text-align:right}
+  .badge{font-size:10.5px;font-weight:800;border-radius:6px;padding:2px 7px}
+  .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(92px + env(safe-area-inset-bottom));
+    background:var(--ink);color:#fff;padding:10px 18px;border-radius:999px;font-size:13.5px;font-weight:700;
+    z-index:80;opacity:0;transition:opacity .25s;pointer-events:none;max-width:88%;text-align:center}
+  .toast.show{opacity:1}
+  .empty{color:var(--ink2);font-size:14px;text-align:center;padding:22px 10px;font-weight:600}
+  .availgrid .arow{display:flex;align-items:center;gap:8px;padding:6px 0}
+  .availgrid .arow .d{min-width:40px;font-weight:800;font-size:13px}
+  .availgrid .arow select{flex:1;padding:9px}
+  .availgrid .arow input{flex:1;padding:9px}
+  .danger{color:var(--red);background:var(--red-soft)}
+</style>
+</head>
+<body>
+<div id="app">
+  <header class="top">
+    <div class="brand"><span class="cup">🥐</span><span>Colette<small>FRENCH PASTRIES · CREW SCHEDULER</small></span></div>
+    <button class="pill" onclick="exportData()">💾 Save</button>
+  </header>
+  <main id="main"></main>
+  <nav class="bottom">
+    <button id="nav-sched" onclick="go('sched')"><span class="ic">📅</span>Schedule</button>
+    <button id="nav-team" onclick="go('team')"><span class="ic">👥</span>Team</button>
+    <button id="nav-texts" onclick="go('texts')"><span class="ic">💬</span>Texts</button>
+    <button id="nav-pay" onclick="go('pay')"><span class="ic">💵</span>Payroll</button>
+    <button id="nav-my" onclick="go('my')"><span class="ic">☕</span>My Week</button>
+  </nav>
+  <div class="overlay" id="overlay" onclick="if(event.target===this)closeSheet()">
+    <div class="sheet" id="sheet"></div>
+  </div>
+  <div class="toast" id="toast"></div>
+  <input type="file" id="importFile" accept=".json" style="display:none" onchange="importData(this)">
+</div>
+<script>
+/* ================= STATE ================= */
+const COLORS=['#a9622f','#3d7d4f','#4a6fa5','#9a5f9e','#b0483a','#7a8a3a','#3f8f8a','#8a6d3b'];
+const DAYS=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+let S={
+  shopName:'Colette French Pastries',
+  location:{name:'Colette French Pastries',
+    address:'2225 Old Milton Pkwy, Suite 100, Alpharetta, GA 30009',
+    lat:34.070187, lng:-84.292770, radius:150},   // geofence radius in meters
+  punches:[],   // {id,empId,date:'YYYY-MM-DD',in:ISO,out:ISO|null,inDist,outDist}
+  employees:[
+    e0('Maya',   'Shift Lead','555-0101',19,0),
+    e0('Jordan', 'Barista',   '555-0102',16,1),
+    e0('Sam',    'Barista',   '555-0103',16,2),
+    e0('Priya',  'Barista',   '555-0104',16.5,3),
+    e0('Diego',  'Shift Lead','555-0105',18.5,4),
+    e0('Lily',   'Barista',   '555-0106',15.5,5),
+  ],
+  templates:[
+    {name:'Open', start:'06:30', end:'12:30'},
+    {name:'Mid',  start:'09:00', end:'15:00'},
+    {name:'Close',start:'12:30', end:'18:30'},
+  ],
+  weeks:{},           // weekKey -> {published:bool, shifts:[{id,day,start,end,tpl,empId,confirmed}]}
+  sales:{},           // weekKey -> estimated sales $ (for labor efficiency %)
+  textSpan:1,         // 1 = this week, 2 = lock in two weeks per text
+  paySpan:1,          // payroll view: 1 or 2 weeks
+  view:'sched',
+  selDay: jsDay(),    // 0=Mon
+  weekStart: monday(new Date()),
+  meId:null,
+  nextId:1,
+};
+function e0(name,role,phone,wage,ci){
+  return {id:'e'+ci, name, role, phone, wage,
+    color:COLORS[ci%COLORS.length],
+    avail:Array.from({length:7},()=>({type:'any'}))};
+}
+function jsDay(){const d=new Date().getDay();return d===0?6:d-1}
+function monday(d){const x=new Date(d);const dow=x.getDay();const diff=(dow===0?-6:1-dow);
+  x.setDate(x.getDate()+diff);x.setHours(0,0,0,0);return x}
+function wkKey(d){return d.toISOString().slice(0,10)}
+function week(){const k=wkKey(S.weekStart);
+  if(!S.weeks[k])S.weeks[k]={published:false,shifts:[]};return S.weeks[k]}
+function dayDate(i){const d=new Date(S.weekStart);d.setDate(d.getDate()+i);return d}
+function weekKeyAt(off){const d=new Date(S.weekStart);d.setDate(d.getDate()+off*7);return wkKey(d)}
+function weekAt(off){const k=weekKeyAt(off);
+  if(!S.weeks[k])S.weeks[k]={published:false,shifts:[]};return S.weeks[k]}
+function dayDateAt(off,i){const d=new Date(S.weekStart);d.setDate(d.getDate()+off*7+i);return d}
+function fmtRangeAt(off){return fmtD(dayDateAt(off,0))+' – '+fmtD(dayDateAt(off,6))}
+function fmtD(d){return d.toLocaleDateString('en-US',{month:'short',day:'numeric'})}
+function fmtRange(){const a=dayDate(0),b=dayDate(6);return fmtD(a)+' – '+fmtD(b)}
+function t12(t){let[h,m]=t.split(':').map(Number);const ap=h>=12?'p':'a';h=h%12||12;
+  return h+(m?':'+String(m).padStart(2,'0'):'')+ap}
+function hrs(s){const[a,b]=[s.start,s.end].map(t=>{const[h,m]=t.split(':').map(Number);return h+m/60});
+  return Math.max(0,b-a)}
+function emp(id){return S.employees.find(e=>e.id===id)}
+function initials(n){return n.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase()}
+
+/* sample schedule for current week */
+(function seed(){
+  const w=week();
+  const plan=[
+    [0,'Open','e0'],[0,'Mid','e1'],[0,'Close','e2'],
+    [1,'Open','e4'],[1,'Mid','e3'],[1,'Close','e5'],
+    [2,'Open','e0'],[2,'Mid','e2'],[2,'Close','e1'],
+    [3,'Open','e4'],[3,'Mid','e5'],[3,'Close','e3'],
+    [4,'Open','e0'],[4,'Mid','e1'],[4,'Close','e2'],
+    [5,'Open','e4'],[5,'Mid','e3'],[5,'Close','e5'],
+    [6,'Open','e0'],[6,'Mid','e2'],[6,'Close',null],
+  ];
+  plan.forEach(([day,tpl,empId])=>{
+    const t=S.templates.find(x=>x.name===tpl);
+    w.shifts.push({id:'s'+(S.nextId++),day,start:t.start,end:t.end,tpl,empId,confirmed:false});
+  });
+})();
+
+/* ================= AVAILABILITY ================= */
+function availIssue(e,shift){
+  const a=e.avail[shift.day];
+  if(a.type==='off')return DAYS[shift.day]+' is their day off';
+  if(a.type==='custom'){
+    if(shift.start<a.from||shift.end>a.to)
+      return 'Only available '+t12(a.from)+'–'+t12(a.to)+' on '+DAYS[shift.day];
+  }
+  return null;
+}
+function weekHours(empId){return week().shifts.filter(s=>s.empId===empId).reduce((t,s)=>t+hrs(s),0)}
+
+/* ================= AUTO-SCHEDULER ================= */
+/* Learns from every past week: who usually works which day + shift,
+   then fills open shifts respecting availability and balancing hours. */
+function slotKey(s){return s.tpl||('t'+s.start)}
+function histStats(beforeKey){
+  const st={};
+  Object.entries(S.weeks).forEach(([k,w])=>{
+    if(k>=beforeKey)return;
+    w.shifts.forEach(s=>{if(!s.empId)return;
+      const a=s.empId+'|'+s.day+'|'+slotKey(s), b=s.empId+'|'+slotKey(s);
+      st[a]=(st[a]||0)+1; st[b]=(st[b]||0)+1;});
+  });
+  return st;
+}
+function patternFor(targetKey){
+  // most recent earlier week that has shifts → reuse its shape (times only)
+  const keys=Object.keys(S.weeks).filter(k=>k<targetKey&&S.weeks[k].shifts.length).sort();
+  if(keys.length){
+    return S.weeks[keys[keys.length-1]].shifts.map(s=>({day:s.day,start:s.start,end:s.end,tpl:s.tpl}));
+  }
+  const pat=[];
+  for(let d=0;d<7;d++)S.templates.forEach(t=>pat.push({day:d,start:t.start,end:t.end,tpl:t.name}));
+  return pat;
+}
+function autoSchedule(offsets,fresh){
+  let filled=0,gaps=0;
+  offsets.forEach(off=>{
+    const key=weekKeyAt(off), w=weekAt(off);
+    if(fresh)w.shifts.forEach(s=>{s.empId=null;s.confirmed=false});
+    if(!w.shifts.length){
+      patternFor(key).forEach(p=>w.shifts.push(
+        {id:'s'+(S.nextId++),day:p.day,start:p.start,end:p.end,tpl:p.tpl,empId:null,confirmed:false}));
+    }
+    const st=histStats(key);
+    const hours={};S.employees.forEach(e=>hours[e.id]=0);
+    w.shifts.forEach(s=>{if(s.empId)hours[s.empId]+=hrs(s)});
+    const totalH=w.shifts.reduce((t,s)=>t+hrs(s),0);
+    const target=totalH/Math.max(1,S.employees.length);
+    const ordered=[...w.shifts].sort((a,b)=>a.day-b.day||(a.start<b.start?-1:1));
+    ordered.forEach(s=>{
+      if(s.empId)return;
+      const cands=S.employees.filter(e=>!availIssue(e,s))
+        .filter(e=>!w.shifts.some(x=>x.empId===e.id&&x.day===s.day&&x.id!==s.id&&x.start<s.end&&s.start<x.end));
+      if(!cands.length){gaps++;return}
+      let best=null,bs=-1e9;
+      cands.forEach(e=>{
+        const sc=3*(st[e.id+'|'+s.day+'|'+slotKey(s)]||0)   // worked this exact day+shift before
+                +1*(st[e.id+'|'+slotKey(s)]||0)             // knows this shift type
+                -1.5*Math.max(0,(hours[e.id]||0)+hrs(s)-target) // keep hours fair
+                -0.4*(hours[e.id]||0);
+        if(sc>bs){bs=sc;best=e}
+      });
+      s.empId=best.id;s.confirmed=false;hours[best.id]+=hrs(s);filled++;
+    });
+    w.published=false;
+  });
+  return {filled,gaps};
+}
+function openAuto(){
+  sheet(`<h3>🤖 Auto-schedule the crew</h3>
+    <p style="font-size:13.5px;color:var(--ink2);margin-bottom:4px">I'll copy your usual week shape,
+    put people on the days and shifts they usually work, respect days off, and keep hours balanced.
+    You can still adjust anything by tapping a shift after.</p>
+    <label>How far ahead?</label>
+    <div class="optrow">
+      <button id="ao0" class="sel" onclick="pickAuto(0)">This week</button>
+      <button id="ao1" onclick="pickAuto(1)">Next week</button>
+      <button id="ao2" onclick="pickAuto(2)">Next 2 weeks 🔒</button>
+    </div>
+    <label style="display:flex;align-items:center;gap:8px;text-transform:none;font-size:14px;letter-spacing:0">
+      <input type="checkbox" id="afresh" style="width:auto"> Start fresh (clear who's already on)</label>
+    <div class="rowbtns" style="margin-top:16px">
+      <button class="btn soft" onclick="closeSheet()">Cancel</button>
+      <button class="btn primary" onclick="runAuto()">✨ Build schedule</button>
+    </div>`);
+  window._autoPick=0;
+}
+function pickAuto(i){window._autoPick=i;
+  [0,1,2].forEach(j=>document.getElementById('ao'+j).classList.toggle('sel',i===j))}
+function runAuto(){
+  const offsets=window._autoPick===0?[0]:window._autoPick===1?[1]:[1,2];
+  const fresh=document.getElementById('afresh').checked;
+  const r=autoSchedule(offsets,fresh);
+  if(window._autoPick>0){const d=new Date(S.weekStart);d.setDate(d.getDate()+7);S.weekStart=monday(d)}
+  if(window._autoPick===2)S.textSpan=2;
+  closeSheet();render();
+  toast(`Filled ${r.filled} shifts${r.gaps?` — ${r.gaps} left open (nobody available)`:''} ✨ Review, then Publish & text`);
+}
+
+/* ================= RENDER ================= */
+function go(v){S.view=v;render()}
+function render(){
+  ['sched','team','texts','pay','my'].forEach(v=>
+    document.getElementById('nav-'+v).classList.toggle('active',S.view===v));
+  const m=document.getElementById('main');
+  if(S.view==='sched')m.innerHTML=rSched();
+  else if(S.view==='team')m.innerHTML=rTeam();
+  else if(S.view==='texts')m.innerHTML=rTexts();
+  else if(S.view==='pay')m.innerHTML=rPay();
+  else m.innerHTML=rMy();
+}
+function weekBar(){
+  const w=week();
+  return `<div class="weekbar">
+    <button class="navbtn" onclick="shiftWeek(-1)">‹</button>
+    <div class="wk">${fmtRange()}
+      <span class="pubtag ${w.published?'pub':'draft'}">${w.published?'PUBLISHED':'DRAFT'}</span></div>
+    <button class="navbtn" onclick="shiftWeek(1)">›</button>
+  </div>`;
+}
+function shiftWeek(n){const d=new Date(S.weekStart);d.setDate(d.getDate()+n*7);
+  S.weekStart=monday(d);render()}
+
+/* ---------- schedule view ---------- */
+function rSched(){
+  const w=week();
+  const tabs=DAYS.map((dn,i)=>{
+    const has=w.shifts.some(s=>s.day===i);
+    return `<button class="daytab ${i===S.selDay?'active':''} ${has?'hasshifts':''}" onclick="S.selDay=${i};render()">
+      <div class="dn">${dn}</div><div class="dd">${dayDate(i).getDate()}</div><div class="dot"></div></button>`;
+  }).join('');
+  const dayShifts=w.shifts.filter(s=>s.day===S.selDay).sort((a,b)=>a.start<b.start?-1:1);
+  const list=dayShifts.length?dayShifts.map(s=>{
+    const e=s.empId?emp(s.empId):null;
+    const issue=e?availIssue(e,s):null;
+    return `<div class="shift">
+      <div class="time"><b>${t12(s.start)}–${t12(s.end)}</b><span>${s.tpl||hrs(s).toFixed(1)+'h'}</span></div>
+      <button class="chip ${e?'':'unassigned'}" onclick="openAssign('${s.id}')">
+        ${e?`<span class="avatar" style="background:${e.color}">${initials(e.name)}</span>${e.name}
+             ${s.confirmed?'<span class="confirmtag ok" style="margin-left:auto">✓</span>':''}
+             ${issue?'<span class="warn" title="'+issue+'">⚠️</span>':''}`
+           :'+ Assign barista'}
+      </button>
+      <button class="del" onclick="delShift('${s.id}')">✕</button>
+    </div>`;
+  }).join(''):`<div class="empty">No shifts on ${DAYS[S.selDay]} yet</div>`;
+
+  const totalH=w.shifts.reduce((t,s)=>t+(s.empId?hrs(s):0),0);
+  const cost=w.shifts.reduce((t,s)=>t+(s.empId?hrs(s)*emp(s.empId).wage:0),0);
+  const open=w.shifts.filter(s=>!s.empId).length;
+  const maxH=Math.max(1,...S.employees.map(e=>weekHours(e.id)));
+  const hourRows=S.employees.map(e=>{
+    const h=weekHours(e.id);if(!h)return '';
+    const over=h>32;
+    return `<div class="hourrow"><span class="nm">${e.name}</span>
+      <span class="bar"><i style="width:${Math.round(h/maxH*100)}%;background:${over?'var(--red)':e.color}"></i></span>
+      <b style="${over?'color:var(--red)':''}">${h.toFixed(1)}h</b></div>`;
+  }).join('');
+
+  return `${weekBar()}
+    <div class="daytabs">${tabs}</div>
+    <div class="card">${list}</div>
+    <button class="addshift" onclick="openAddShift()">+ Add shift to ${DAYS[S.selDay]} ${fmtD(dayDate(S.selDay))}</button>
+    <button class="btn primary" style="width:100%;margin-bottom:10px" onclick="openAuto()">🤖 Auto-schedule the crew</button>
+    <div class="rowbtns">
+      <button class="btn soft" onclick="copyLastWeek()">⟳ Copy last week</button>
+      <button class="btn primary" onclick="publishWeek()">📣 Publish ${w.published?'again':'week'}</button>
+    </div>
+    <div class="stats">
+      <div class="stat"><b>${totalH.toFixed(1)}</b><span>Hours</span></div>
+      <div class="stat"><b>$${Math.round(cost)}</b><span>Est. labor</span></div>
+      <div class="stat"><b style="${open?'color:var(--amber)':''}">${open}</b><span>Unfilled</span></div>
+    </div>
+    <h2 class="section">Hours by person</h2>
+    <div class="card">${hourRows||'<div class="empty">Nobody scheduled yet</div>'}</div>`;
+}
+
+/* ---------- team view ---------- */
+function rTeam(){
+  const rows=S.employees.map(e=>{
+    const offDays=e.avail.map((a,i)=>a.type==='off'?DAYS[i]:null).filter(Boolean);
+    const sub=[e.role,'$'+e.wage+'/hr',offDays.length?('off '+offDays.join(', ')):'any day'].join(' · ');
+    return `<div class="emp" onclick="openEmp('${e.id}')">
+      <span class="avatar" style="background:${e.color}">${initials(e.name)}</span>
+      <span class="who"><b>${e.name}</b><span>${sub}</span></span>
+      <span class="arr">›</span></div>`;
+  }).join('');
+  return `<h2 class="section">Your crew</h2>
+    <div class="card">${rows||'<div class="empty">No employees yet</div>'}</div>
+    <button class="addshift" onclick="openEmp(null)">+ Add employee</button>
+    <div class="note"><b>Tip</b>Set each person's days off and hours in their profile — the schedule
+    will flag ⚠️ if you accidentally book them outside their availability.</div>
+    <div class="rowbtns">
+      <button class="btn soft" onclick="document.getElementById('importFile').click()">📂 Load saved data</button>
+    </div>`;
+}
+
+/* ---------- texts view ---------- */
+function spanOffsets(){return S.textSpan===2?[0,1]:[0]}
+function shiftsInSpan(eid){
+  const out=[];
+  spanOffsets().forEach(off=>weekAt(off).shifts.forEach(s=>{
+    if(s.empId===eid)out.push({...s,off})}));
+  return out.sort((a,b)=>a.off-b.off||a.day-b.day||(a.start<b.start?-1:1));
+}
+function msgFor(e){
+  const mine=shiftsInSpan(e.id);
+  if(!mine.length)return null;
+  let body='';
+  spanOffsets().forEach(off=>{
+    const wk=mine.filter(s=>s.off===off);
+    if(!wk.length)return;
+    if(S.textSpan===2)body+=`Week of ${fmtD(dayDateAt(off,0))}:\n`;
+    body+=wk.map(s=>`• ${DAYS[s.day]} ${fmtD(dayDateAt(off,s.day))}: ${t12(s.start)}–${t12(s.end)}${s.tpl?' ('+s.tpl+')':''}`).join('\n')+'\n';
+  });
+  const tot=mine.reduce((t,s)=>t+hrs(s),0);
+  const range=S.textSpan===2?fmtD(dayDateAt(0,0))+' – '+fmtD(dayDateAt(1,6)):fmtRange();
+  return `🥐 ${S.shopName} — your schedule for ${range}:\n${body}Total: ${tot.toFixed(1)} hrs.\nReply YES to confirm 🙏`;
+}
+function rTexts(){
+  const w=week();
+  const cards=S.employees.map(e=>{
+    const msg=msgFor(e);if(!msg)return '';
+    const mine=shiftsInSpan(e.id);
+    const allConf=mine.every(s=>s.confirmed);
+    const smsHref='sms:'+e.phone.replace(/[^+\d]/g,'')+'?&body='+encodeURIComponent(msg);
+    return `<div class="msgcard">
+      <div class="mhead">
+        <span class="avatar" style="background:${e.color}">${initials(e.name)}</span>
+        <div><b>${e.name}</b><span>${e.phone}</span></div>
+        <span class="badge ${allConf?'ok':'pend'}" style="margin-left:auto">${allConf?'✓ CONFIRMED':'PENDING'}</span>
+      </div>
+      <div class="bubble">${msg.replace(/</g,'&lt;')}</div>
+      <div class="msgbtns">
+        <a class="btnlink" href="${smsHref}">💬 Text now</a>
+        <button class="btn soft" onclick="copyMsg('${e.id}')">Copy</button>
+        <button class="btn soft" onclick="markConfirmed('${e.id}')">${allConf?'Undo ✓':'Got YES ✓'}</button>
+      </div>
+    </div>`;
+  }).join('');
+  return `${weekBar()}
+    <div class="optrow" style="margin:2px 0 12px">
+      <button class="${S.textSpan===1?'sel':''}" onclick="S.textSpan=1;render()">Text this week</button>
+      <button class="${S.textSpan===2?'sel':''}" onclick="S.textSpan=2;render()">🔒 Text 2 weeks (lock in)</button>
+    </div>
+    ${w.published?'':'<div class="note"><b>Heads up</b>This week is still a draft — hit Publish on the Schedule tab first so everyone gets final shifts.</div>'}
+    ${cards||'<div class="empty">Nobody is scheduled this week yet</div>'}
+    <div class="note"><b>Free right now</b>“Text now” opens your phone's Messages app with the schedule pre-typed — sending is free from your own number.
+    <br><br><b>Upgrade later: auto-texts</b>Connect Twilio (~$1.15/mo for a number + ~1¢/text) and the app can send schedules and collect YES replies automatically — I can wire that up when you're ready.</div>`;
+}
+function copyMsg(id){
+  const msg=msgFor(emp(id));
+  navigator.clipboard?.writeText(msg).then(()=>toast('Copied — paste it anywhere'))
+    .catch(()=>toast('Copy not available here'));
+}
+function markConfirmed(id){
+  let all=true;
+  spanOffsets().forEach(off=>weekAt(off).shifts.forEach(s=>{
+    if(s.empId===id&&!s.confirmed)all=false}));
+  spanOffsets().forEach(off=>weekAt(off).shifts.forEach(s=>{
+    if(s.empId===id)s.confirmed=!all}));
+  toast(all?'Marked pending':'Marked confirmed ✓');render();
+}
+
+/* ================= GPS TIME CLOCK ================= */
+function distM(aLat,aLng,bLat,bLng){
+  const R=6371000,toR=x=>x*Math.PI/180;
+  const dLat=toR(bLat-aLat),dLng=toR(bLng-aLng);
+  const h=Math.sin(dLat/2)**2+Math.cos(toR(aLat))*Math.cos(toR(bLat))*Math.sin(dLng/2)**2;
+  return 2*R*Math.asin(Math.sqrt(h));
+}
+function fmtClock(d){d=new Date(d);let h=d.getHours();const m=String(d.getMinutes()).padStart(2,'0');
+  const ap=h>=12?'pm':'am';h=h%12||12;return h+':'+m+ap}
+function todayCtx(){const now=new Date();
+  return {key:wkKey(monday(now)),day:jsDay(),dstr:now.toLocaleDateString('en-CA'),now}}
+function todayShifts(eid){const t=todayCtx();const w=S.weeks[t.key];
+  return w?w.shifts.filter(s=>s.empId===eid&&s.day===t.day).sort((a,b)=>a.start<b.start?-1:1):[]}
+function openPunch(eid){const t=todayCtx();
+  return S.punches.find(p=>p.empId===eid&&p.date===t.dstr&&!p.out)}
+function getGPS(){return new Promise((res,rej)=>{
+  if(!navigator.geolocation)return rej('none');
+  navigator.geolocation.getCurrentPosition(p=>res(p.coords),e=>rej(e),
+    {enableHighAccuracy:true,timeout:12000,maximumAge:0})})}
+async function doPunch(dir){
+  const e=emp(S.meId);if(!e)return;
+  const t=todayCtx();
+  if(dir==='in'){
+    const shifts=todayShifts(e.id);
+    if(!shifts.length){toast(`You're not on today's schedule, so clock-in is locked 🔒`);return}
+    if(openPunch(e.id)){toast(`You're already clocked in`);return}
+    const [h,m]=shifts[0].start.split(':').map(Number);
+    const st=new Date();st.setHours(h,m,0,0);
+    if(t.now.getTime()<st.getTime()-20*60000){
+      toast(`Too early — clock-in opens 20 min before your ${t12(shifts[0].start)} shift`);return}
+  }else if(!openPunch(e.id)){toast(`You're not clocked in`);return}
+  toast('📍 Checking you’re at the store…');
+  let c;
+  try{c=await getGPS()}
+  catch{toast('Couldn’t read GPS — allow Location access for this page and try again');return}
+  const d=Math.round(distM(c.latitude,c.longitude,S.location.lat,S.location.lng));
+  if(d>S.location.radius){
+    const dd=d>=1000?(d/1000).toFixed(1)+' km':d+' m';
+    toast(`❌ You're ${dd} from ${S.location.name} — you can only clock ${dir} at the store`);return}
+  if(dir==='in'){
+    S.punches.push({id:'p'+(S.nextId++),empId:e.id,date:t.dstr,
+      in:t.now.toISOString(),out:null,inDist:d,outDist:null});
+    toast(`✅ Clocked in at ${fmtClock(t.now)} (${d} m from the store)`);
+  }else{
+    const p=openPunch(e.id);p.out=t.now.toISOString();p.outDist=d;
+    const hrsW=((new Date(p.out)-new Date(p.in))/3600000).toFixed(2);
+    toast(`👋 Clocked out at ${fmtClock(t.now)} — ${hrsW} hrs today`);
+  }
+  render();
+}
+function punchesInPeriod(offs){
+  const dates=new Set();
+  offs.forEach(off=>{for(let i=0;i<7;i++)dates.add(dayDateAt(off,i).toLocaleDateString('en-CA'))});
+  return S.punches.filter(p=>dates.has(p.date));
+}
+function clockedHours(eid,offs){
+  return punchesInPeriod(offs).filter(p=>p.empId===eid&&p.out)
+    .reduce((t,p)=>t+(new Date(p.out)-new Date(p.in))/3600000,0);
+}
+function delPunch(id){S.punches=S.punches.filter(p=>p.id!==id);render();toast('Punch removed')}
+
+/* ---------- payroll view ---------- */
+function payOffsets(){return S.paySpan===2?[0,1]:[0]}
+function rPay(){
+  const offs=payOffsets();
+  const rows=S.employees.map(e=>{
+    let h=0;offs.forEach(off=>weekAt(off).shifts.forEach(s=>{if(s.empId===e.id)h+=hrs(s)}));
+    const clk=clockedHours(e.id,offs);
+    const payH=clk>0?clk:h;              // pay real clocked hours when they exist
+    const gross=payH*e.wage;
+    return {e,h,clk,payH,gross};
+  }).filter(r=>r.h>0||r.clk>0).sort((a,b)=>b.gross-a.gross);
+  const totH=rows.reduce((t,r)=>t+r.payH,0);
+  const totPay=rows.reduce((t,r)=>t+r.gross,0);
+  const sales=offs.reduce((t,off)=>t+(Number(S.sales[weekKeyAt(off)])||0),0);
+  const pct=sales>0?totPay/sales*100:null;
+  const pctColor=pct==null?'':pct<=32?'var(--green)':pct<=40?'var(--amber)':'var(--red)';
+  const table=rows.map(r=>`<div class="hourrow">
+      <span class="nm">${r.e.name}</span>
+      <span style="flex:1;font-size:12.5px;color:var(--ink2);font-weight:600">
+        ${r.clk>0?`⏱ ${r.clk.toFixed(2)}h clocked`:`${r.h.toFixed(1)}h sched`} × $${r.e.wage}</span>
+      <b>$${r.gross.toFixed(2)}</b></div>`).join('');
+  const plist=punchesInPeriod(offs).sort((a,b)=>a.date<b.date?1:a.date>b.date?-1:0).map(p=>{
+    const e=emp(p.empId);if(!e)return '';
+    const dur=p.out?((new Date(p.out)-new Date(p.in))/3600000).toFixed(2)+'h':'on clock';
+    return `<div class="hourrow"><span class="nm">${e.name}</span>
+      <span style="flex:1;font-size:12px;color:var(--ink2);font-weight:600">
+        ${p.date.slice(5)} · ${fmtClock(p.in)}–${p.out?fmtClock(p.out):'…'} · 📍${p.inDist}m</span>
+      <b>${dur}</b><button class="del" onclick="delPunch('${p.id}')">✕</button></div>`;
+  }).join('');
+  const salesInputs=offs.map(off=>`
+    <label>Est. sales — week of ${fmtD(dayDateAt(off,0))} ($)</label>
+    <input inputmode="numeric" value="${S.sales[weekKeyAt(off)]||''}" placeholder="e.g. 9500"
+      onchange="S.sales['${weekKeyAt(off)}']=this.value;render()">`).join('');
+  const range=offs.length===2?fmtD(dayDateAt(0,0))+' – '+fmtD(dayDateAt(1,6)):fmtRange();
+  return `${weekBar()}
+    <div class="optrow" style="margin:2px 0 12px">
+      <button class="${S.paySpan===1?'sel':''}" onclick="S.paySpan=1;render()">This week</button>
+      <button class="${S.paySpan===2?'sel':''}" onclick="S.paySpan=2;render()">2-week pay period</button>
+    </div>
+    <div class="stats">
+      <div class="stat"><b>${totH.toFixed(1)}</b><span>Hours</span></div>
+      <div class="stat"><b>$${Math.round(totPay)}</b><span>Gross payroll</span></div>
+      <div class="stat"><b style="color:${pctColor}">${pct!=null?pct.toFixed(1)+'%':'—'}</b><span>Labor %</span></div>
+    </div>
+    <h2 class="section">Pay by person · ${range}</h2>
+    <div class="card">${table||'<div class="empty">Nobody scheduled in this period</div>'}</div>
+    <div class="card">${salesInputs}
+      <p style="font-size:12.5px;color:var(--ink2);margin-top:10px">Labor % = payroll ÷ sales.
+      Coffee shops & bakeries usually aim for <b>25–35%</b>. Green ≤32%, amber ≤40%.</p></div>
+    <h2 class="section">⏱ Time clock punches</h2>
+    <div class="card">${plist||'<div class="empty">No GPS punches yet this period — pay falls back to scheduled hours</div>'}</div>
+    <div class="rowbtns">
+      <button class="btn primary" onclick="exportPayrollCSV()">⬇️ Export payroll CSV</button>
+    </div>
+    <div class="note"><b>How pay is counted</b>If someone has GPS clock-in/out punches, payroll uses their
+    <i>clocked</i> hours; otherwise it falls back to scheduled hours. Punches are GPS-verified within
+    ${S.location.radius} m of the store — tap ✕ to remove a bad punch.</div>`;
+}
+function exportPayrollCSV(){
+  const offs=payOffsets();
+  const range=offs.length===2?fmtD(dayDateAt(0,0))+'-'+fmtD(dayDateAt(1,6)):fmtRange();
+  let csv='Employee,Role,Phone,Hourly Rate,Scheduled Hours,Clocked Hours,Hours Paid,Gross Pay,Period\n';
+  S.employees.forEach(e=>{
+    let h=0;offs.forEach(off=>weekAt(off).shifts.forEach(s=>{if(s.empId===e.id)h+=hrs(s)}));
+    const clk=clockedHours(e.id,offs);
+    const payH=clk>0?clk:h;
+    if(!payH)return;
+    csv+=`"${e.name}","${e.role}","${e.phone}",${e.wage},${h.toFixed(2)},${clk.toFixed(2)},${payH.toFixed(2)},${(payH*e.wage).toFixed(2)},"${range}"\n`;
+  });
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
+  a.download='colette-payroll.csv';a.click();
+  toast('Payroll CSV downloaded — hand it to payroll 💵');
+}
+
+/* ---------- my week (employee) ---------- */
+function rMy(){
+  const chips=S.employees.map(e=>
+    `<button class="pchip ${S.meId===e.id?'sel':''}" onclick="S.meId='${e.id}';render()">${e.name}</button>`).join('');
+  let body='';
+  if(S.meId){
+    const e=emp(S.meId);const w=week();
+    const op=openPunch(e.id);const tsh=todayShifts(e.id);
+    const clockCard=`<h2 class="section">⏱ Time clock — today</h2><div class="card">
+      ${tsh.length
+        ?tsh.map(s=>`<div style="font-weight:800;font-size:14px;margin-bottom:8px">Today: ${t12(s.start)}–${t12(s.end)}${s.tpl?' · '+s.tpl:''}</div>`).join('')
+        :`<div style="font-size:13.5px;color:var(--ink2);font-weight:600;margin-bottom:8px">You're not scheduled today</div>`}
+      ${op
+        ?`<div style="font-size:14px;margin-bottom:10px">🟢 On the clock since <b>${fmtClock(op.in)}</b></div>
+          <button class="btn primary" style="width:100%" onclick="doPunch('out')">👋 Clock out (GPS check)</button>`
+        :(tsh.length
+          ?`<button class="btn green" style="width:100%" onclick="doPunch('in')">📍 Clock in at the store</button>`
+          :`<button class="btn soft" style="width:100%;opacity:.55" disabled>📍 Clock in locked — not scheduled</button>`)}
+      <p style="font-size:11.5px;color:var(--ink2);margin-top:9px">GPS-verified: you must be within ${S.location.radius} m of
+      ${S.location.address} and on today's schedule to punch in or out.</p>
+    </div>`;
+    body+=clockCard;
+    const mine=w.shifts.filter(s=>s.empId===e.id).sort((a,b)=>a.day-b.day||(a.start<b.start?-1:1));
+    const tot=mine.reduce((t,s)=>t+hrs(s),0);
+    const pay=mine.reduce((t,s)=>t+hrs(s)*e.wage,0);
+    const rows=mine.length?mine.map(s=>`
+      <div class="myshift">
+        <div class="dchip"><b>${dayDate(s.day).getDate()}</b><span>${DAYS[s.day]}</span></div>
+        <div class="info"><b>${t12(s.start)} – ${t12(s.end)}</b>
+          <span>${s.tpl||''} · ${hrs(s).toFixed(1)} hrs</span></div>
+        <button class="cbtn ${s.confirmed?'done':''}" onclick="confirmShift('${s.id}')">
+          ${s.confirmed?'✓ Confirmed':'Confirm'}</button>
+      </div>`).join(''):`<div class="empty">No shifts this week — enjoy! 🎉</div>`;
+    body+=`<h2 class="section">My shifts</h2><div class="card">${rows}</div>
+      ${mine.length?`<div class="rowbtns">
+        <button class="btn green" onclick="confirmAll('${e.id}')">✓ Confirm all my shifts</button>
+        <button class="btn soft" onclick="downloadICS('${e.id}')">📆 Add to phone calendar</button>
+      </div>
+      <div class="stats">
+        <div class="stat"><b>${mine.length}</b><span>Shifts</span></div>
+        <div class="stat"><b>${tot.toFixed(1)}</b><span>Hours</span></div>
+        <div class="stat"><b>$${Math.round(pay)}</b><span>Est. pay</span></div>
+      </div>`:''}`;
+  }else body='<div class="empty">Tap your name to see your week ☝️</div>';
+  return `${weekBar()}<h2 class="section">Who are you?</h2>
+    <div class="whoami">${chips}</div>${body}`;
+}
+function confirmShift(id){const s=week().shifts.find(x=>x.id===id);
+  s.confirmed=!s.confirmed;render()}
+function confirmAll(eid){week().shifts.filter(s=>s.empId===eid).forEach(s=>s.confirmed=true);
+  toast('All confirmed — thank you! ☕');render()}
+
+/* ================= SHEETS ================= */
+function sheet(html){document.getElementById('sheet').innerHTML='<div class="grab"></div>'+html;
+  document.getElementById('overlay').classList.add('open')}
+function closeSheet(){document.getElementById('overlay').classList.remove('open')}
+
+/* add shift */
+function openAddShift(){
+  const tpls=S.templates.map((t,i)=>
+    `<button onclick="addFromTpl(${i})">${t.name} · ${t12(t.start)}–${t12(t.end)}</button>`).join('');
+  sheet(`<h3>Add shift — ${DAYS[S.selDay]} ${fmtD(dayDate(S.selDay))}</h3>
+    <label>Quick add</label><div class="optrow">${tpls}</div>
+    <label>Or custom times</label>
+    <div style="display:flex;gap:10px">
+      <input type="time" id="cs" value="08:00"><input type="time" id="ce" value="14:00">
+    </div>
+    <div class="rowbtns" style="margin-top:16px">
+      <button class="btn soft" onclick="closeSheet()">Cancel</button>
+      <button class="btn primary" onclick="addCustom()">Add shift</button>
+    </div>`);
+}
+function addFromTpl(i){const t=S.templates[i];
+  week().shifts.push({id:'s'+(S.nextId++),day:S.selDay,start:t.start,end:t.end,tpl:t.name,empId:null,confirmed:false});
+  closeSheet();render()}
+function addCustom(){
+  const s=document.getElementById('cs').value,e=document.getElementById('ce').value;
+  if(!s||!e||e<=s){toast('End time must be after start');return}
+  week().shifts.push({id:'s'+(S.nextId++),day:S.selDay,start:s,end:e,tpl:null,empId:null,confirmed:false});
+  closeSheet();render()}
+function delShift(id){const w=week();w.shifts=w.shifts.filter(s=>s.id!==id);render()}
+
+/* assign */
+function openAssign(sid){
+  const s=week().shifts.find(x=>x.id===sid);
+  const rows=S.employees.map(e=>{
+    const issue=availIssue(e,s);
+    const h=weekHours(e.id);
+    const cur=s.empId===e.id;
+    return `<button class="pickemp" onclick="assign('${sid}','${e.id}')">
+      <span class="avatar" style="background:${e.color}">${initials(e.name)}</span>
+      <span><b>${e.name} ${cur?'· assigned':''}</b><span>${e.role} · ${h.toFixed(1)}h this week</span></span>
+      <span class="right">${issue?`<span class="badge danger">⚠ ${issue}</span>`:`<span class="badge ok">available</span>`}</span>
+    </button>`;
+  }).join('');
+  sheet(`<h3>Assign — ${DAYS[s.day]} ${t12(s.start)}–${t12(s.end)}</h3>${rows}
+    <button class="pickemp" onclick="assign('${sid}',null)">
+      <span class="avatar" style="background:#c9b8a9">–</span><b>Leave unassigned</b></button>`);
+}
+function assign(sid,eid){const s=week().shifts.find(x=>x.id===sid);
+  s.empId=eid;s.confirmed=false;closeSheet();render()}
+
+/* employee editor */
+function openEmp(id){
+  const e=id?emp(id):{id:null,name:'',role:'Barista',phone:'',wage:16,avail:Array.from({length:7},()=>({type:'any'}))};
+  const availRows=DAYS.map((d,i)=>{
+    const a=e.avail[i];
+    return `<div class="arow"><span class="d">${d}</span>
+      <select id="at${i}" onchange="render0()">
+        <option value="any" ${a.type==='any'?'selected':''}>Any time</option>
+        <option value="off" ${a.type==='off'?'selected':''}>Day off</option>
+        <option value="custom" ${a.type==='custom'?'selected':''}>Between…</option>
+      </select>
+      <input type="time" id="af${i}" value="${a.from||'09:00'}" style="display:${a.type==='custom'?'block':'none'}">
+      <input type="time" id="ao${i}" value="${a.to||'15:00'}" style="display:${a.type==='custom'?'block':'none'}">
+    </div>`;
+  }).join('');
+  sheet(`<h3>${id?'Edit '+e.name:'New employee'}</h3>
+    <label>Name</label><input id="en" value="${e.name}" placeholder="First name">
+    <label>Role</label><div class="optrow">
+      <button id="r0" class="${e.role==='Barista'?'sel':''}" onclick="pickRole(0)">Barista</button>
+      <button id="r1" class="${e.role==='Shift Lead'?'sel':''}" onclick="pickRole(1)">Shift Lead</button></div>
+    <label>Cell phone (for schedule texts)</label><input id="ep" value="${e.phone}" placeholder="555-0100" inputmode="tel">
+    <label>Hourly wage ($)</label><input id="ew" value="${e.wage}" inputmode="decimal">
+    <label>Availability</label><div class="availgrid">${availRows}</div>
+    <div class="rowbtns" style="margin-top:16px">
+      ${id?`<button class="btn soft danger" onclick="delEmp('${id}')">Remove</button>`:''}
+      <button class="btn soft" onclick="closeSheet()">Cancel</button>
+      <button class="btn primary" onclick="saveEmp(${id?`'${id}'`:'null'})">Save</button>
+    </div>`);
+  window.render0=()=>{DAYS.forEach((_,i)=>{
+    const t=document.getElementById('at'+i).value;
+    document.getElementById('af'+i).style.display=t==='custom'?'block':'none';
+    document.getElementById('ao'+i).style.display=t==='custom'?'block':'none';})};
+}
+let _role='Barista';
+function pickRole(i){_role=i?'Shift Lead':'Barista';
+  document.getElementById('r0').classList.toggle('sel',i===0);
+  document.getElementById('r1').classList.toggle('sel',i===1)}
+function saveEmp(id){
+  const name=document.getElementById('en').value.trim();
+  if(!name){toast('Name is required');return}
+  const avail=DAYS.map((_,i)=>{
+    const t=document.getElementById('at'+i).value;
+    return t==='custom'
+      ?{type:'custom',from:document.getElementById('af'+i).value,to:document.getElementById('ao'+i).value}
+      :{type:t};
+  });
+  const data={name,phone:document.getElementById('ep').value.trim(),
+    wage:parseFloat(document.getElementById('ew').value)||16,
+    role:document.getElementById('r1').classList.contains('sel')?'Shift Lead':'Barista',avail};
+  if(id)Object.assign(emp(id),data);
+  else S.employees.push({...data,id:'e'+(S.nextId++)+'n',
+    color:COLORS[S.employees.length%COLORS.length]});
+  closeSheet();render();toast('Saved ✓');
+}
+function delEmp(id){
+  Object.values(S.weeks).forEach(w=>w.shifts.forEach(s=>{if(s.empId===id){s.empId=null;s.confirmed=false}}));
+  S.employees=S.employees.filter(e=>e.id!==id);
+  if(S.meId===id)S.meId=null;
+  closeSheet();render();toast('Removed');
+}
+
+/* ================= ACTIONS ================= */
+function publishWeek(){const w=week();w.published=true;
+  toast('Week published — now text the crew 💬');go('texts')}
+function copyLastWeek(){
+  const prev=new Date(S.weekStart);prev.setDate(prev.getDate()-7);
+  const pw=S.weeks[wkKey(prev)];
+  if(!pw||!pw.shifts.length){toast('Nothing on last week to copy');return}
+  const w=week();
+  pw.shifts.forEach(s=>w.shifts.push({...s,id:'s'+(S.nextId++),confirmed:false}));
+  w.published=false;toast('Copied '+pw.shifts.length+' shifts from last week');render();
+}
+
+/* ics download */
+function downloadICS(eid){
+  const e=emp(eid);const w=week();
+  const mine=w.shifts.filter(s=>s.empId===eid);
+  if(!mine.length){toast('No shifts to add');return}
+  const dt=(d,t)=>{const x=new Date(d);const[h,m]=t.split(':');
+    return x.getFullYear()+String(x.getMonth()+1).padStart(2,'0')+String(x.getDate()).padStart(2,'0')+
+      'T'+h+m+'00'};
+  const ev=mine.map(s=>['BEGIN:VEVENT',
+    'UID:'+s.id+'@brewcrew','DTSTART:'+dt(dayDate(s.day),s.start),'DTEND:'+dt(dayDate(s.day),s.end),
+    'SUMMARY:🥐 '+S.shopName+' — '+(s.tpl||'Shift'),'END:VEVENT'].join('\r\n')).join('\r\n');
+  const ics=['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//BrewCrew//EN',ev,'END:VCALENDAR'].join('\r\n');
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([ics],{type:'text/calendar'}));
+  a.download=e.name.toLowerCase()+'-shifts.ics';a.click();
+  toast('Calendar file downloaded 📆');
+}
+
+/* save / load */
+function exportData(){
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([JSON.stringify(S,null,1)],{type:'application/json'}));
+  a.download='colette-schedule.json';a.click();
+  toast('Saved! Load it next time via Team tab — same file feeds the dashboard');
+}
+function importData(inp){
+  const f=inp.files[0];if(!f)return;
+  const r=new FileReader();
+  r.onload=()=>{try{const d=JSON.parse(r.result);
+    if(!d.employees||!d.weeks)throw 0;
+    S=d;S.weekStart=monday(new Date(S.weekStart));
+    S.sales=S.sales||{};S.textSpan=S.textSpan||1;S.paySpan=S.paySpan||1;
+    S.punches=S.punches||[];
+    S.location=S.location||{name:S.shopName,address:'',lat:34.070187,lng:-84.292770,radius:150};
+    render();toast('Data loaded ✓');
+  }catch{toast('That file does not look like BrewCrew data')}};
+  r.readAsText(f);inp.value='';
+}
+
+function toast(msg){const t=document.getElementById('toast');t.textContent=msg;
+  t.classList.add('show');clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove('show'),2600)}
+
+render();
+
+/* When hosted online, auto-load the published schedule (data.json in the same folder).
+   Locally (file://) this quietly does nothing and the app uses its built-in data. */
+fetch('data.json',{cache:'no-store'})
+  .then(r=>r.ok?r.json():null)
+  .then(d=>{
+    if(!d||!d.employees||!d.weeks)return;
+    S=d;
+    S.weekStart=monday(new Date());   // always open on the current week
+    S.sales=S.sales||{};S.textSpan=S.textSpan||1;S.paySpan=S.paySpan||1;
+    S.punches=S.punches||[];
+    S.location=S.location||{name:S.shopName,address:'',lat:34.070187,lng:-84.292770,radius:150};
+    S.view='sched';S.meId=null;S.selDay=jsDay();
+    render();toast('☁️ Live Colette schedule loaded');
+  }).catch(()=>{});
+</script>
+</body>
+</html>
