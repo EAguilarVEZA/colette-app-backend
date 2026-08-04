@@ -732,6 +732,27 @@ function clockedHours(eid,offs){
     .reduce((t,p)=>t+(new Date(p.out)-new Date(p.in))/3600000,0);
 }
 function delPunch(id){S.punches=S.punches.filter(p=>p.id!==id);render();toast('Punch removed')}
+/* Punctuality: compare punches to that day's agreed shift — behavior data, never pay */
+function schedWindow(empId,dateStr){
+  const d=new Date(dateStr+'T12:00:00');
+  const wk=S.weeks[wkKey(monday(d))];if(!wk)return null;
+  const day=(d.getDay()+6)%7;
+  const mine=wk.shifts.filter(s=>s.empId===empId&&s.day===day);
+  if(!mine.length)return null;
+  const start=mine.reduce((a,s)=>s.start<a?s.start:a,mine[0].start);
+  const end=mine.reduce((a,s)=>s.end>a?s.end:a,mine[0].end);
+  const mk=t=>{const[x,y]=t.split(':').map(Number);
+    const dd=new Date(dateStr+'T12:00:00');dd.setHours(x,y,0,0);return dd};
+  return {start:mk(start),end:mk(end)};
+}
+const GRACE_MIN=5;
+function punchFlags(p){
+  const w=schedWindow(p.empId,p.date);
+  if(!w)return {late:0,early:0,unsched:true};
+  const late=Math.round((new Date(p.in)-w.start)/60000);
+  const early=p.out?Math.round((w.end-new Date(p.out))/60000):0;
+  return {late:late>GRACE_MIN?late:0, early:early>GRACE_MIN?early:0};
+}
 
 /* ---------- payroll view ---------- */
 function payOffsets(){return S.paySpan===2?[0,1]:[0]}
@@ -740,7 +761,7 @@ function rPay(){
   const rows=S.employees.map(e=>{
     let h=0;offs.forEach(off=>weekAt(off).shifts.forEach(s=>{if(s.empId===e.id)h+=hrs(s)}));
     const clk=clockedHours(e.id,offs);
-    const payH=clk>0?clk:h;              // pay real clocked hours when they exist
+    const payH=h;    // ALWAYS pay the agreed scheduled hours — punches are behavior data only
     const gross=payH*e.wage;
     return {e,h,clk,payH,gross};
   }).filter(r=>r.h>0||r.clk>0).sort((a,b)=>b.gross-a.gross);
@@ -752,15 +773,34 @@ function rPay(){
   const table=rows.map(r=>`<div class="hourrow">
       <span class="nm">${r.e.name}</span>
       <span style="flex:1;font-size:12.5px;color:var(--ink2);font-weight:600">
-        ${r.clk>0?`⏱ ${r.clk.toFixed(2)}h clocked`:`${r.h.toFixed(1)}h sched`} × $${r.e.wage}</span>
+        ${r.h.toFixed(1)}h agreed × $${r.e.wage}</span>
       <b>$${r.gross.toFixed(2)}</b></div>`).join('');
+  /* attendance / reliability summary — informational only */
+  const rel=S.employees.map(e=>{
+    const ps=punchesInPeriod(offs).filter(p=>p.empId===e.id);
+    if(!ps.length)return '';
+    let nLate=0,lateMin=0,nEarly=0;
+    ps.forEach(p=>{const f=punchFlags(p);
+      if(f.late){nLate++;lateMin+=f.late}
+      if(f.early)nEarly++;});
+    const ok=ps.length-nLate;
+    const flag=nLate||nEarly;
+    return `<div class="hourrow"><span class="nm">${e.name}</span>
+      <span style="flex:1;font-size:12.5px;color:var(--ink2);font-weight:600">
+        ${ps.length} punch${ps.length>1?'es':''} · ${ok} on time${nLate?` · ${nLate} late (avg ${Math.round(lateMin/nLate)}m)`:''}${nEarly?` · ${nEarly} left early`:''}</span>
+      <b>${flag?'⚠️':'✅'}</b></div>`;
+  }).join('');
   const plist=punchesInPeriod(offs).sort((a,b)=>a.date<b.date?1:a.date>b.date?-1:0).map(p=>{
     const e=emp(p.empId);if(!e)return '';
-    const dur=p.out?((new Date(p.out)-new Date(p.in))/3600000).toFixed(2)+'h':'on clock';
+    const f=punchFlags(p);
+    const badge=f.unsched?'❔':(f.late||f.early)
+      ?[f.late?`⏰ ${f.late}m late`:'',f.early?`🏃 left ${f.early}m early`:''].filter(Boolean).join(' · ')
+      :'✅ on time';
     return `<div class="hourrow"><span class="nm">${e.name}</span>
       <span style="flex:1;font-size:12px;color:var(--ink2);font-weight:600">
         ${p.date.slice(5)} · ${fmtClock(p.in)}–${p.out?fmtClock(p.out):'…'} · 📍${p.inDist}m</span>
-      <b>${dur}</b><button class="del" onclick="delPunch('${p.id}')">✕</button></div>`;
+      <b style="font-size:11px;${(f.late||f.early)?'color:var(--red)':''}">${badge}</b>
+      <button class="del" onclick="delPunch('${p.id}')">✕</button></div>`;
   }).join('');
   const salesInputs=offs.map(off=>`
     <label>Est. sales — week of ${fmtD(dayDateAt(off,0))} ($)</label>
@@ -782,25 +822,27 @@ function rPay(){
     <div class="card">${salesInputs}
       <p style="font-size:12.5px;color:var(--ink2);margin-top:10px">Labor % = payroll ÷ sales.
       Coffee shops & bakeries usually aim for <b>25–35%</b>. Green ≤32%, amber ≤40%.</p></div>
+    <h2 class="section">🕰 Reliability (info only — never affects pay)</h2>
+    <div class="card">${rel||'<div class="empty">No punches yet this period</div>'}</div>
     <h2 class="section">⏱ Time clock punches</h2>
-    <div class="card">${plist||'<div class="empty">No GPS punches yet this period — pay falls back to scheduled hours</div>'}</div>
+    <div class="card">${plist||'<div class="empty">No GPS punches yet this period</div>'}</div>
     <div class="rowbtns">
       <button class="btn primary" onclick="exportPayrollCSV()">⬇️ Export payroll CSV</button>
     </div>
-    <div class="note"><b>How pay is counted</b>If someone has GPS clock-in/out punches, payroll uses their
-    <i>clocked</i> hours; otherwise it falls back to scheduled hours. Punches are GPS-verified within
-    ${S.location.radius} m of the store — tap ✕ to remove a bad punch.</div>`;
+    <div class="note"><b>How pay is counted</b>Pay is always the <i>agreed scheduled hours</i> × wage.
+    GPS punches never change a paycheck — they're your attendance record (late arrivals and early
+    exits get flagged after a ${GRACE_MIN}-minute grace). Tap ✕ to remove a bad punch.</div>`;
 }
 function exportPayrollCSV(){
   const offs=payOffsets();
   const range=offs.length===2?fmtD(dayDateAt(0,0))+'-'+fmtD(dayDateAt(1,6)):fmtRange();
-  let csv='Employee,Role,Phone,Hourly Rate,Scheduled Hours,Clocked Hours,Hours Paid,Gross Pay,Period\n';
+  let csv='Employee,Role,Phone,Hourly Rate,Agreed Hours,Gross Pay,Clocked Hours (info),Late Punches (info),Period\n';
   S.employees.forEach(e=>{
     let h=0;offs.forEach(off=>weekAt(off).shifts.forEach(s=>{if(s.empId===e.id)h+=hrs(s)}));
+    if(!h)return;
     const clk=clockedHours(e.id,offs);
-    const payH=clk>0?clk:h;
-    if(!payH)return;
-    csv+=`"${e.name}","${e.role}","${e.phone}",${e.wage},${h.toFixed(2)},${clk.toFixed(2)},${payH.toFixed(2)},${(payH*e.wage).toFixed(2)},"${range}"\n`;
+    const nLate=punchesInPeriod(offs).filter(p=>p.empId===e.id&&punchFlags(p).late).length;
+    csv+=`"${e.name}","${e.role}","${e.phone}",${e.wage},${h.toFixed(2)},${(h*e.wage).toFixed(2)},${clk.toFixed(2)},${nLate},"${range}"\n`;
   });
   const a=document.createElement('a');
   a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
