@@ -257,6 +257,41 @@ const LS_STATE='colette_state', LS_SESS='colette_sess';
 function lsGet(k){try{return localStorage.getItem(k)}catch{return null}}
 function lsSet(k,v){try{localStorage.setItem(k,v)}catch{}}
 function lsDel(k){try{localStorage.removeItem(k)}catch{}}
+/* ---- cloud sync (endpoints live in this same Vercel project) ---- */
+const API='/api';
+function adminKey(){return lsGet('colette_adminkey')||''}
+async function apiFetch(path,opts={},asAdmin){
+  const headers=Object.assign({'Content-Type':'application/json'},opts.headers||{});
+  if(asAdmin&&adminKey())headers['x-admin-key']=adminKey();
+  const r=await fetch(API+path,{...opts,headers});
+  const d=await r.json().catch(()=>({}));
+  return {status:r.status,...d};
+}
+async function pushState(){
+  if(!adminKey()){toast('Set your Cloud sync key in ⚙️ first');return false}
+  try{
+    const r=await apiFetch('/sched-state',{method:'POST',body:JSON.stringify(S)},true);
+    if(r.ok){toast('☁️ Synced — crew phones will update');return true}
+    toast(r.error||r.fix||'Sync failed');return false;
+  }catch{return false}
+}
+async function pullState(asAdmin){
+  try{const r=await apiFetch('/sched-state',{},asAdmin);
+    if(r.ok&&r.state)return r.state}catch{}
+  return null;
+}
+function applyServerState(st){
+  const keepAuth=S.auth,keepSales=S.sales;
+  const wages={},pins={};
+  S.employees.forEach(e=>{wages[e.id]=e.wage;pins[e.id]=e.pin});
+  S=normalizeState(st);
+  if(!S.auth)S.auth=keepAuth;
+  if(!S.sales||!Object.keys(S.sales).length)S.sales=keepSales||{};
+  S.employees.forEach(e=>{
+    if(e.wage===undefined)e.wage=wages[e.id]!==undefined?wages[e.id]:0;
+    if(e.pin===undefined)e.pin=pins[e.id]||''});
+  if(sess&&sess.type==='emp'){S.meId=sess.empId;S.view='my'}
+}
 async function sha256(t){
   try{
     const b=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(t));
@@ -289,12 +324,27 @@ function swapLogin(admin){
   document.getElementById('pinmode').style.display=admin?'none':'block';
   document.getElementById('adminmode').style.display=admin?'block':'none';
 }
-function pinLogin(){
+async function pinLogin(){
   const p=(document.getElementById('pinin').value||'').trim();
+  if(!/^\d{4}$/.test(p)){toast('Enter your 4 digits');return}
+  /* cloud first — works on any phone once the admin has synced */
+  try{
+    const r=await apiFetch('/sched-login',{method:'POST',body:JSON.stringify({pin:p})});
+    if(r.ok){
+      sess={type:'emp',empId:r.empId,pin:p};
+      const st=await pullState(false);if(st)applyServerState(st);
+      S.meId=r.empId;S.view='my';
+      lsSet(LS_SESS,JSON.stringify(sess));
+      render();toast(`Hey ${r.name} ☕`);return;
+    }
+    if(r.status===401){toast('PIN not recognized — ask the admin for yours');
+      document.getElementById('pinin').value='';return}
+  }catch{}
+  /* offline / not-yet-synced fallback */
   const e=S.employees.find(x=>x.pin&&x.pin===p);
   if(!e){toast('PIN not recognized — ask the admin for yours');
     document.getElementById('pinin').value='';return}
-  sess={type:'emp',empId:e.id};S.meId=e.id;S.view='my';
+  sess={type:'emp',empId:e.id,pin:p};S.meId=e.id;S.view='my';
   lsSet(LS_SESS,JSON.stringify(sess));
   render();toast(`Hey ${e.name} ☕`);
 }
@@ -324,6 +374,12 @@ function openAdminSettings(){
   sheet(`<h3>⚙️ Admin settings</h3>
     <label>Employee PINs (edit in each profile)</label>
     <div class="card">${pins}</div>
+    <label>Cloud sync key (same value as SCHED_ADMIN_KEY in Vercel)</label>
+    <input class="adm" id="skey" value="${adminKey()}" placeholder="paste your sync key"
+      style="width:100%;border:1px solid var(--line);border-radius:12px;padding:12px;font-size:15px;background:var(--card)">
+    <div class="rowbtns" style="margin-top:10px">
+      <button class="btn soft" onclick="lsSet('colette_adminkey',(document.getElementById('skey').value||'').trim());pushState()">☁️ Save key & sync now</button>
+    </div>
     <label>Change admin login</label>
     <input class="adm" id="cid" value="${S.auth.adminId}" placeholder="Admin ID"
       style="width:100%;border:1px solid var(--line);border-radius:12px;padding:12px;font-size:15px;background:var(--card);margin-bottom:8px">
@@ -633,12 +689,13 @@ function rTexts(){
     const msg=msgFor(e);if(!msg)return '';
     const mine=shiftsInSpan(e.id);
     const allConf=mine.every(s=>s.confirmed);
+    const declined=mine.some(s=>s.declined);
     const smsHref='sms:'+e.phone.replace(/[^+\d]/g,'')+'?&body='+encodeURIComponent(msg);
     return `<div class="msgcard">
       <div class="mhead">
         <span class="avatar" style="background:${e.color}">${initials(e.name)}</span>
         <div><b>${e.name}</b><span>${e.phone}</span></div>
-        <span class="badge ${allConf?'ok':'pend'}" style="margin-left:auto">${allConf?'✓ CONFIRMED':'PENDING'}</span>
+        <span class="badge ${declined?'danger':allConf?'ok':'pend'}" style="margin-left:auto">${declined?'❌ SAID NO — FIX':allConf?'✓ CONFIRMED':'PENDING'}</span>
       </div>
       <div class="bubble">${msg.replace(/</g,'&lt;')}</div>
       <div class="msgbtns">
@@ -648,11 +705,22 @@ function rTexts(){
       </div>
     </div>`;
   }).join('');
+  const notes=(S.notes||[]).slice(-5).reverse().map(n=>
+    `<div class="hourrow"><span class="nm">${n.name||''}</span>
+     <span style="flex:1;font-size:12.5px;color:var(--ink2);font-weight:600">“${(n.text||'').replace(/</g,'&lt;')}”</span>
+     <b style="font-size:10.5px">${(n.at||'').slice(5,16).replace('T',' ')}</b></div>`).join('');
   return `${weekBar()}
     <div class="optrow" style="margin:2px 0 12px">
       <button class="${S.textSpan===1?'sel':''}" onclick="S.textSpan=1;render()">Text this week</button>
       <button class="${S.textSpan===2?'sel':''}" onclick="S.textSpan=2;render()">🔒 Text 2 weeks (lock in)</button>
     </div>
+    <div class="rowbtns">
+      <button class="btn primary" onclick="autoSend()">🚀 Auto-send via Twilio</button>
+      <button class="btn soft sm" onclick="refreshConf()">🔄</button>
+    </div>
+    ${notes?`<h2 class="section">💬 Replies from the crew</h2>
+      <div class="card">${notes}</div>
+      <div class="rowbtns"><button class="btn soft sm" onclick="S.notes=[];pushState();render()">Clear replies</button></div>`:''}
     ${w.published?'':'<div class="note"><b>Heads up</b>This week is still a draft — hit Publish on the Schedule tab first so everyone gets final shifts.</div>'}
     ${cards||'<div class="empty">Nobody is scheduled this week yet</div>'}
     <div class="note"><b>Free right now</b>“Text now” opens your phone's Messages app with the schedule pre-typed — sending is free from your own number.
@@ -707,6 +775,20 @@ async function doPunch(dir){
   let c;
   try{c=await getGPS()}
   catch{toast('Couldn’t read GPS — allow Location access for this page and try again');return}
+  /* server-verified punch when the cloud is set up (admin sees it instantly) */
+  if(sess&&sess.type==='emp'&&sess.pin){
+    try{
+      const r=await apiFetch('/sched-punch',{method:'POST',
+        body:JSON.stringify({pin:sess.pin,dir,lat:c.latitude,lng:c.longitude})});
+      if(r.ok){
+        toast(dir==='in'?`✅ Clocked in (${r.dist} m from the store)`:'👋 Clocked out — nice shift!');
+        const st=await pullState(false);if(st)applyServerState(st);
+        render();return;
+      }
+      if(r.status!==503&&r.error){toast('❌ '+r.error);return}
+      /* 503 = cloud storage not provisioned yet → fall back to on-device punch */
+    }catch{}
+  }
   const d=Math.round(distM(c.latitude,c.longitude,S.location.lat,S.location.lng));
   if(d>S.location.radius){
     const dd=d>=1000?(d/1000).toFixed(1)+' km':d+' m';
@@ -901,7 +983,10 @@ function rMy(){
 }
 function confirmShift(id){const s=week().shifts.find(x=>x.id===id);
   s.confirmed=!s.confirmed;render()}
-function confirmAll(eid){week().shifts.filter(s=>s.empId===eid).forEach(s=>s.confirmed=true);
+function confirmAll(eid){
+  [0,1].forEach(off=>weekAt(off).shifts.forEach(s=>{if(s.empId===eid)s.confirmed=true}));
+  if(sess&&sess.type==='emp'&&sess.pin)
+    apiFetch('/sched-confirm',{method:'POST',body:JSON.stringify({pin:sess.pin,span:2})}).catch(()=>{});
   toast('All confirmed — thank you! ☕');render()}
 
 /* ================= SHEETS ================= */
@@ -1021,7 +1106,39 @@ function delEmp(id){
 
 /* ================= ACTIONS ================= */
 function publishWeek(){const w=week();w.published=true;
+  if(adminKey())pushState();
   toast('Week published — now text the crew 💬');go('texts')}
+function autoSend(){
+  sheet(`<h3>🚀 Auto-send schedules</h3>
+    <p style="font-size:13.5px;color:var(--ink2);margin-bottom:14px">Sends ${S.textSpan===2?'the next 2 weeks':'this week'}
+    to everyone scheduled, straight from your business number. When they reply YES or NO,
+    the app updates by itself — no tapping.</p>
+    <div class="rowbtns">
+      <button class="btn primary" onclick="doAutoSend('sms')">📱 Text (SMS)</button>
+      <button class="btn green" onclick="doAutoSend('whatsapp')">💚 WhatsApp</button>
+    </div>
+    <button class="btn soft" style="width:100%;margin-top:10px" onclick="closeSheet()">Cancel</button>`);
+}
+async function doAutoSend(channel){
+  closeSheet();
+  if(!(await pushState()))return;
+  toast('🚀 Sending…');
+  try{
+    const r=await apiFetch('/sched-send',{method:'POST',
+      body:JSON.stringify({span:S.textSpan,channel})},true);
+    if(r.ok){
+      const sent=r.results.filter(x=>x.sent).length;
+      const fails=r.results.filter(x=>!x.sent&&x.reason!=='No shifts in period');
+      toast(`🚀 Sent ${sent}/${r.results.length} — replies auto-confirm`);
+      if(fails.length)setTimeout(()=>toast('⚠️ '+fails[0].name+': '+fails[0].reason),2800);
+    }else toast(r.error||r.fix||'Send failed');
+  }catch{toast('Could not reach the cloud')}
+}
+async function refreshConf(){
+  const st=await pullState(true);
+  if(st){applyServerState(st);render();toast('🔄 Updated from the cloud')}
+  else toast('Nothing in the cloud yet — Publish first to sync');
+}
 function copyLastWeek(){
   const prev=new Date(S.weekStart);prev.setDate(prev.getDate()-7);
   const pw=S.weeks[wkKey(prev)];
@@ -1094,8 +1211,20 @@ function normalizeState(d){
     if(s0.type==='admin'||(s0.type==='emp'&&emp(s0.empId)))sess=s0;
     if(sess&&sess.type==='emp'){S.meId=sess.empId;S.view='my'}}catch{}}
   render();
-  if(!usedLocal){
-    /* hosted: load the published schedule; on file:// this quietly does nothing */
+  (async()=>{
+    const isAdmSess=sess&&sess.type==='admin';
+    /* cloud state: employees always take it; the admin's device keeps local
+       edits and pulls on demand with 🔄 (publishing pushes local → cloud) */
+    const st=await pullState(isAdmSess);
+    if(st){
+      if(isAdmSess)return;
+      applyServerState(st);
+      if(sess&&sess.type==='emp'&&!emp(sess.empId)){logout();return}
+      render();toast('☁️ Live Colette schedule loaded');
+      return;
+    }
+    if(usedLocal)return;
+    /* fallback: static data.json (pre-cloud publishing) */
     fetch('data.json',{cache:'no-store'})
       .then(r=>r.ok?r.json():null)
       .then(d=>{
@@ -1107,7 +1236,7 @@ function normalizeState(d){
         }
         render();toast('☁️ Live Colette schedule loaded');
       }).catch(()=>{});
-  }
+  })();
 })();
 </script>
 </body>
