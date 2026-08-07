@@ -954,3 +954,97 @@ export async function charge(opts: {
   if (!r.ok) throw { status: r.status, body };
   return { paymentId: body?.id, raw: body };
 }
+
+// ================== Supplier order submissions (staff → owner) ==================
+// A store employee fills the supplier order sheet and submits it with their PIN.
+// We notify the owner (SMS + email) with a one-tap deep link that pre-fills the
+// quantities so the owner can place each supplier order. Pending orders are kept
+// in Vercel KV (Upstash REST) so the dashboard can list them — with graceful
+// no-op fallback when KV isn't configured (SMS / email / link still work).
+
+const SITE_URL = process.env.SITE_URL || 'https://colette-website.vercel.app';
+
+// PIN → employee name. Configure via env EMPLOYEE_PINS = {"1234":"Maria",...}.
+// Before PINs are configured we accept any 3–8 digit PIN so the flow still works.
+export function employeeForPin(pin: string): string | null {
+  const raw = (pin || '').trim();
+  if (!raw) return null;
+  let map: Record<string, string> = {};
+  try { map = JSON.parse(process.env.EMPLOYEE_PINS || '{}'); } catch { map = {}; }
+  if (map[raw]) return map[raw];
+  if (Object.keys(map).length === 0 && /^\d{3,8}$/.test(raw)) return `Staff · PIN ${raw}`;
+  return null;
+}
+
+// ---- Vercel KV (Upstash REST) tiny client. No-ops when env is not set. ----
+async function kv(cmd: (string | number)[]): Promise<any> {
+  const url = process.env.KV_REST_API_URL, token = process.env.KV_REST_API_TOKEN;
+  if (!url || !token) return null;
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(cmd),
+  });
+  const out: any = await r.json().catch(() => ({}));
+  return out?.result ?? null;
+}
+const PENDING_KEY = 'colette:pending_orders';
+
+export interface PendingOrder {
+  id: string; employee: string; at: number;
+  counts: { costco: number; rd: number; ic: number };
+  totalItems: number; link: string;
+  orders: { c: Record<string, number>; r: Record<string, number>; i: Record<string, number> };
+}
+
+function b64url(obj: any): string {
+  return Buffer.from(JSON.stringify(obj)).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+export function buildOrderLink(payload: any): string {
+  return `${SITE_URL}/supplier-order.html?load=${b64url(payload)}`;
+}
+
+export async function savePendingOrder(o: PendingOrder): Promise<void> {
+  try { await kv(['LPUSH', PENDING_KEY, JSON.stringify(o)]); await kv(['LTRIM', PENDING_KEY, 0, 24]); } catch { /* best effort */ }
+}
+export async function listPendingOrders(): Promise<PendingOrder[]> {
+  try {
+    const arr = await kv(['LRANGE', PENDING_KEY, 0, 24]);
+    if (!Array.isArray(arr)) return [];
+    return arr.map((s: string) => { try { return JSON.parse(s); } catch { return null; } }).filter(Boolean);
+  } catch { return []; }
+}
+export async function resolvePendingOrder(id: string): Promise<void> {
+  const keep = (await listPendingOrders()).filter((o) => o.id !== id);
+  try {
+    await kv(['DEL', PENDING_KEY]);
+    for (let k = keep.length - 1; k >= 0; k--) await kv(['LPUSH', PENDING_KEY, JSON.stringify(keep[k])]);
+  } catch { /* best effort */ }
+}
+
+// ---- Owner notification: SMS (Twilio) + email (Resend). Both best-effort. ----
+export async function notifyOwner(opts: { sms?: string; emailSubject?: string; emailHtml?: string }) {
+  const results: any = {};
+  const to = process.env.OWNER_PHONE;
+  const sid = process.env.TWILIO_SID, token = process.env.TWILIO_TOKEN, from = process.env.TWILIO_FROM;
+  if (opts.sms && to && sid && token && from) {
+    try {
+      const body = new URLSearchParams({ To: to, From: from, Body: opts.sms });
+      const r = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
+        method: 'POST', headers: { Authorization: 'Basic ' + Buffer.from(`${sid}:${token}`).toString('base64'), 'Content-Type': 'application/x-www-form-urlencoded' }, body,
+      });
+      results.sms = r.ok ? 'sent' : `err ${r.status}`;
+    } catch { results.sms = 'err'; }
+  } else results.sms = 'skipped';
+  const rk = process.env.RESEND_API_KEY, efrom = process.env.EMAIL_FROM, eto = process.env.OWNER_EMAIL;
+  if (opts.emailHtml && rk && efrom && eto) {
+    try {
+      const r = await fetch('https://api.resend.com/emails', {
+        method: 'POST', headers: { Authorization: `Bearer ${rk}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from: efrom, to: eto, subject: opts.emailSubject || 'New supplier order', html: opts.emailHtml }),
+      });
+      results.email = r.ok ? 'sent' : `err ${r.status}`;
+    } catch { results.email = 'err'; }
+  } else results.email = 'skipped';
+  return results;
+}
