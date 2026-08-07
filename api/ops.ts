@@ -9,6 +9,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
   applyCors, assertConfigured, fail,
   suggestReorder, suggestReorderSmart, getAllCustomers, receiveStock, resetStockZero, salesSummary, setItemCosts, setItemPrices, stockoutAnalysis, getRecentOrders, notifyCustomer,
+  employeeForPin, buildOrderLink, savePendingOrder, listPendingOrders, resolvePendingOrder, notifyOwner,
 } from '../lib/clover.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -41,14 +42,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const dow = req.query.dow !== undefined ? Number(req.query.dow) : undefined;
         const buffer = req.query.buffer !== undefined ? Number(req.query.buffer) : undefined;
         // Heavy (full-year pull): cache at the edge for 6h so only the first call/day is slow.
-        res.setHeader('Cache-Control', 's-maxage=21600, stale-while-revalidate=43200');
+        res.setHeader('Cache-Control', 's-maxage=72000, stale-while-revalidate=86400');
         return res.status(200).json({ ok: true, ...(await suggestReorderSmart({ days, dow, buffer })) });
       }
       case 'stockout': {
         if (req.method !== 'GET') return fail(res, 405, 'Use GET');
         const days = Math.min(Number(req.query.days) || 120, 365);
         const gap = req.query.gap !== undefined ? Number(req.query.gap) : undefined;
-        res.setHeader('Cache-Control', 's-maxage=21600, stale-while-revalidate=43200');
+        res.setHeader('Cache-Control', 's-maxage=72000, stale-while-revalidate=86400');
         return res.status(200).json({ ok: true, ...(await stockoutAnalysis({ days, gapMinutes: gap })) });
       }
       case 'metrics': {
@@ -124,8 +125,46 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const r = await resetStockZero(offset, limit);
         return res.status(200).json({ ok: true, done: r.nextOffset === null, ...r });
       }
+      case 'submit-order': {
+        // A store employee submits a supplier order for the owner to place.
+        // PIN-gated (not the admin secret) so staff can use it without the key.
+        if (req.method !== 'POST') return fail(res, 405, 'Use POST');
+        const employee = employeeForPin(String(body?.pin || ''));
+        if (!employee) return fail(res, 401, 'Invalid PIN');
+        const c = (body?.c && typeof body.c === 'object') ? body.c : {};
+        const r = (body?.r && typeof body.r === 'object') ? body.r : {};
+        const i = (body?.i && typeof body.i === 'object') ? body.i : {};
+        const counts = { costco: Object.keys(c).length, rd: Object.keys(r).length, ic: Object.keys(i).length };
+        const totalItems = counts.costco + counts.rd + counts.ic;
+        if (!totalItems) return fail(res, 400, 'Order is empty');
+        const at = Date.now();
+        const id = at.toString(36) + Math.random().toString(36).slice(2, 6);
+        const link = buildOrderLink({ e: employee, t: at, c, r, i });
+        const order = { id, employee, at, counts, totalItems, link, orders: { c, r, i } };
+        await savePendingOrder(order);
+        const sms = `Colette: new supplier order from ${employee} — Costco ${counts.costco}, RD ${counts.rd}, Publix ${counts.ic} items. Place it: ${link}`;
+        const emailHtml = `<p><b>${employee}</b> submitted a supplier order.</p>`
+          + `<p>Costco: ${counts.costco} items · Restaurant Depot: ${counts.rd} items · Publix: ${counts.ic} items</p>`
+          + `<p><a href="${link}">Open the order sheet with these quantities pre-filled →</a></p>`
+          + `<p style="color:#888;font-size:12px">Submitted ${new Date(at).toLocaleString('en-US', { timeZone: 'America/New_York' })} ET</p>`;
+        const notify = await notifyOwner({ sms, emailSubject: `New supplier order from ${employee}`, emailHtml });
+        return res.status(200).json({ ok: true, employee, id, link, notify });
+      }
+      case 'pending-orders': {
+        if (req.method !== 'GET') return fail(res, 405, 'Use GET');
+        if (!requireAuth()) return;
+        return res.status(200).json({ ok: true, orders: await listPendingOrders() });
+      }
+      case 'resolve-order': {
+        if (req.method !== 'POST') return fail(res, 405, 'Use POST');
+        if (!requireAuth()) return;
+        const id = String(body?.id || '');
+        if (!id) return fail(res, 400, 'id required');
+        await resolvePendingOrder(id);
+        return res.status(200).json({ ok: true });
+      }
       default:
-        return fail(res, 400, 'Unknown action. Use reorder-suggest | reorder-plan | stockout | metrics | place-order | set-costs | recent-orders | notify-customer | customers-export | inventory-receive | inventory-reset-zero');
+        return fail(res, 400, 'Unknown action. Use reorder-suggest | reorder-plan | stockout | metrics | place-order | set-costs | recent-orders | notify-customer | customers-export | inventory-receive | inventory-reset-zero | submit-order | pending-orders | resolve-order');
     }
   } catch (e: any) {
     fail(res, e?.status || 502, `${action} failed`, e?.body ?? String(e));
