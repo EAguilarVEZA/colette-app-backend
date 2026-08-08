@@ -35,7 +35,7 @@ export function applyCors(req: VercelRequest, res: VercelResponse): boolean {
       : '';
   if (allow) res.setHeader('Access-Control-Allow-Origin', allow);
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-colette-secret');
   if (req.method === 'OPTIONS') {
     res.status(204).end();
     return true; // handled
