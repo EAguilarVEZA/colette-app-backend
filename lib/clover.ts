@@ -976,17 +976,32 @@ export function employeeForPin(pin: string): string | null {
   return null;
 }
 
-// ---- Vercel KV (Upstash REST) tiny client. No-ops when env is not set. ----
-async function kv(cmd: (string | number)[]): Promise<any> {
-  const url = process.env.KV_REST_API_URL, token = process.env.KV_REST_API_TOKEN;
-  if (!url || !token) return null;
-  const r = await fetch(url, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(cmd),
-  });
-  const out: any = await r.json().catch(() => ({}));
-  return out?.result ?? null;
+// ---- Pending-order storage. Works with either flavor of Redis:
+//   • HTTP/REST (Vercel KV / Upstash):  KV_REST_API_URL + KV_REST_API_TOKEN
+//   • Standard connection (Official Redis for Vercel): REDIS_URL
+// No-ops when neither is configured (SMS/email/link still work).
+async function kvREST(cmd: (string | number)[]): Promise<{ ok: boolean; result?: any }> {
+  const url = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (!url || !token) return { ok: false };
+  try {
+    const r = await fetch(url, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(cmd) });
+    const out: any = await r.json().catch(() => ({}));
+    return { ok: r.ok, result: out?.result ?? null };
+  } catch { return { ok: false }; }
+}
+// Standard Redis (TCP/TLS) via REDIS_URL — the free "Official Redis for Vercel".
+// Lazy singleton; ioredis is imported only when a REDIS_URL is present.
+let _redis: any = null;
+async function redisTCP(): Promise<any> {
+  const url = process.env.KV_REDIS_URL || process.env.REDIS_URL || process.env.KV_URL || process.env.REDIS_TLS_URL;
+  if (!url) return null;
+  if (!_redis) {
+    // @ts-ignore — ioredis is installed on Vercel via package.json (not in local typecheck)
+    try { const mod: any = await import('ioredis'); const Redis = mod.default || mod; _redis = new Redis(url, { maxRetriesPerRequest: 2, enableReadyCheck: false }); }
+    catch { _redis = null; }
+  }
+  return _redis;
 }
 const PENDING_KEY = 'colette:pending_orders';
 
@@ -1005,21 +1020,26 @@ export function buildOrderLink(payload: any): string {
 }
 
 export async function savePendingOrder(o: PendingOrder): Promise<void> {
-  try { await kv(['LPUSH', PENDING_KEY, JSON.stringify(o)]); await kv(['LTRIM', PENDING_KEY, 0, 24]); } catch { /* best effort */ }
+  const s = JSON.stringify(o);
+  const r = await kvREST(['LPUSH', PENDING_KEY, s]);
+  if (r.ok) { await kvREST(['LTRIM', PENDING_KEY, 0, 24]); return; }
+  const c = await redisTCP(); if (!c) return;
+  try { await c.lpush(PENDING_KEY, s); await c.ltrim(PENDING_KEY, 0, 24); } catch { /* best effort */ }
 }
 export async function listPendingOrders(): Promise<PendingOrder[]> {
-  try {
-    const arr = await kv(['LRANGE', PENDING_KEY, 0, 24]);
-    if (!Array.isArray(arr)) return [];
-    return arr.map((s: string) => { try { return JSON.parse(s); } catch { return null; } }).filter(Boolean);
-  } catch { return []; }
+  let arr: any = null;
+  const r = await kvREST(['LRANGE', PENDING_KEY, 0, 24]);
+  if (r.ok) arr = r.result;
+  else { const c = await redisTCP(); if (c) { try { arr = await c.lrange(PENDING_KEY, 0, 24); } catch { arr = null; } } }
+  if (!Array.isArray(arr)) return [];
+  return arr.map((s: string) => { try { return JSON.parse(s); } catch { return null; } }).filter(Boolean);
 }
 export async function resolvePendingOrder(id: string): Promise<void> {
   const keep = (await listPendingOrders()).filter((o) => o.id !== id);
-  try {
-    await kv(['DEL', PENDING_KEY]);
-    for (let k = keep.length - 1; k >= 0; k--) await kv(['LPUSH', PENDING_KEY, JSON.stringify(keep[k])]);
-  } catch { /* best effort */ }
+  const del = await kvREST(['DEL', PENDING_KEY]);
+  if (del.ok) { for (let k = keep.length - 1; k >= 0; k--) await kvREST(['LPUSH', PENDING_KEY, JSON.stringify(keep[k])]); return; }
+  const c = await redisTCP(); if (!c) return;
+  try { await c.del(PENDING_KEY); for (let k = keep.length - 1; k >= 0; k--) await c.lpush(PENDING_KEY, JSON.stringify(keep[k])); } catch { /* best effort */ }
 }
 
 // ---- Owner notification: SMS (Twilio) + email (Resend). Both best-effort. ----
