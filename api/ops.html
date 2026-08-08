@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Colette Ops</title>
+<style>
+:root{--paper:#faf6ef;--cream:#f3ead9;--ink:#241d16;--muted:#8a7c68;--line:#e3d7c3;--gold:#c99a3b;--gold-deep:#8a6a1f;--wine:#7c2d3a}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--paper);color:var(--ink);display:flex;flex-direction:column;height:100vh;overflow:hidden}
+/* Header */
+.top{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;padding:10px 16px;background:var(--cream);border-bottom:1px solid var(--line)}
+.brand{font-weight:800;letter-spacing:.02em}
+.brand span{color:var(--gold-deep)}
+.who{font-size:.8rem;color:var(--muted);display:flex;gap:10px;align-items:center}
+.who button{background:none;border:1px solid var(--line);border-radius:16px;padding:5px 12px;font-size:.78rem;cursor:pointer;color:var(--ink)}
+/* Tabs */
+.tabbar{flex:0 0 auto;display:flex;gap:4px;padding:8px 10px;background:var(--cream);border-bottom:1px solid var(--line);overflow-x:auto}
+.tabbar button{flex:0 0 auto;background:none;border:1px solid transparent;border-radius:18px;padding:8px 16px;font-size:.86rem;font-weight:600;color:var(--muted);cursor:pointer;white-space:nowrap}
+.tabbar button.on{background:var(--gold);color:#1a1206;border-color:var(--gold)}
+/* Frames */
+.frames{flex:1 1 auto;position:relative;background:#fff}
+.frames iframe{position:absolute;inset:0;width:100%;height:100%;border:0;display:none}
+.frames iframe.on{display:block}
+.placeholder{position:absolute;inset:0;display:none;align-items:center;justify-content:center;text-align:center;padding:30px;color:var(--muted)}
+.placeholder.on{display:flex}
+/* Login */
+#login{position:fixed;inset:0;background:linear-gradient(160deg,#faf6ef,#f0e4cf);display:flex;align-items:center;justify-content:center;z-index:50;padding:20px}
+.card{background:#fff;border:1px solid var(--line);border-radius:20px;padding:28px 24px;width:100%;max-width:360px;box-shadow:0 12px 40px rgba(0,0,0,.10);text-align:center}
+.card h1{margin:0 0 4px;font-size:1.4rem}
+.card .sub{color:var(--muted);font-size:.85rem;margin-bottom:20px}
+.card input{width:100%;padding:13px;border:1px solid var(--line);border-radius:12px;font-size:1.1rem;text-align:center;letter-spacing:.15em;margin-bottom:12px}
+.card .go{width:100%;background:var(--gold);color:#1a1206;border:none;border-radius:24px;padding:13px;font-weight:800;font-size:1rem;cursor:pointer}
+.card .switch{margin-top:16px;font-size:.82rem;color:var(--gold-deep);cursor:pointer;background:none;border:none}
+.card .msg{min-height:18px;font-size:.82rem;margin-top:10px}
+.card .msg.err{color:var(--wine)}
+</style>
+</head>
+<body>
+
+<!-- ============ LOGIN ============ -->
+<div id="login">
+  <div class="card">
+    <div style="font-size:1.8rem">🥐</div>
+    <h1>Colette</h1>
+    <div class="sub" id="login-sub">Enter your 4-digit PIN to clock in and work</div>
+    <div id="pane-staff">
+      <input id="pin" type="tel" inputmode="numeric" maxlength="8" placeholder="• • • •" autocomplete="off">
+      <button class="go" onclick="loginStaff()">Let’s go →</button>
+      <div class="msg" id="staff-msg"></div>
+      <button class="switch" onclick="showAdmin()">I’m the admin →</button>
+    </div>
+    <div id="pane-admin" style="display:none">
+      <input id="adminkey" type="password" placeholder="Admin key" autocomplete="off" style="letter-spacing:normal">
+      <button class="go" onclick="loginAdmin()">Sign in →</button>
+      <div class="msg" id="admin-msg"></div>
+      <button class="switch" onclick="showStaff()">← Staff PIN</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ APP ============ -->
+<div class="top">
+  <div class="brand">🥐 Colette <span>Ops</span></div>
+  <div class="who"><span id="whoami"></span><button onclick="logout()">Sign out</button></div>
+</div>
+<div class="tabbar" id="tabbar"></div>
+<div class="frames" id="frames"></div>
+
+<script>
+const BACKEND='https://colette-app-backend.vercel.app';
+const SCHEDULER='https://colette-app-backend.vercel.app/scheduler/index.html';
+const $=id=>document.getElementById(id);
+
+// Tab definitions. `roles` controls who sees each. `src` is the embedded page.
+// About/Team point to pages you add to this same site (upload the two HTMLs).
+const TABS=[
+  {id:'schedule', label:'📅 Schedule',      roles:['employee','admin'], src:SCHEDULER},
+  {id:'order',    label:'🛒 Order Supplies',roles:['employee','admin'], src:'/supplier-order.html'},
+  {id:'dash',     label:'📊 Dashboard',     roles:['admin'],            src:'/dashboard.html'},
+  {id:'about',    label:'✨ About Colette',  roles:['employee','admin'], src:'/colette-la-difference_1.html'},
+  {id:'team',     label:'👥 Team & Roles',  roles:['employee','admin'], src:'/colette-team-profiles_2.html'},
+];
+
+let SESSION=null; // {role, name, pin?}
+
+function saveSession(s){ SESSION=s; try{ localStorage.setItem('colette_ops_session', JSON.stringify(s)); }catch(e){} }
+function loadSession(){ try{ return JSON.parse(localStorage.getItem('colette_ops_session')||'null'); }catch(e){ return null; } }
+
+function showStaff(){ $('pane-staff').style.display='block'; $('pane-admin').style.display='none'; $('login-sub').textContent='Enter your 4-digit PIN to clock in and work'; }
+function showAdmin(){ $('pane-staff').style.display='none'; $('pane-admin').style.display='block'; $('login-sub').textContent='Owner sign-in — full access'; }
+
+async function loginStaff(){
+  const pin=($('pin').value||'').trim(); const m=$('staff-msg'); m.className='msg';
+  if(!pin){ m.className='msg err'; m.textContent='Enter your PIN.'; return; }
+  m.textContent='Checking…';
+  try{
+    const r=await fetch(BACKEND+'/api/ops?action=auth-check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pin})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok||!d.ok){ m.className='msg err'; m.textContent=d.error||'PIN not recognized.'; return; }
+    saveSession({role:d.role,name:d.name,pin}); enterApp();
+  }catch(e){ m.className='msg err'; m.textContent='Network error — try again.'; }
+}
+async function loginAdmin(){
+  const key=($('adminkey').value||'').trim(); const m=$('admin-msg'); m.className='msg';
+  if(!key){ m.className='msg err'; m.textContent='Enter the admin key.'; return; }
+  m.textContent='Checking…';
+  try{
+    const r=await fetch(BACKEND+'/api/ops?action=auth-check',{method:'POST',headers:{'Content-Type':'application/json','x-colette-secret':key},body:JSON.stringify({})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok||!d.ok){ m.className='msg err'; m.textContent=d.error||'Key not accepted.'; return; }
+    try{ localStorage.setItem('colette_admin_key',key); }catch(e){} // dashboard iframe reads this
+    saveSession({role:'admin',name:'Admin'}); enterApp();
+  }catch(e){ m.className='msg err'; m.textContent='Network error — try again.'; }
+}
+function logout(){ try{ localStorage.removeItem('colette_ops_session'); }catch(e){} SESSION=null; location.reload(); }
+
+function srcFor(t){
+  // Pass the employee PIN into the supplier tab so staff don't re-enter it.
+  if(t.id==='order' && SESSION && SESSION.role==='employee' && SESSION.pin) return t.src+'?pin='+encodeURIComponent(SESSION.pin);
+  return t.src;
+}
+function enterApp(){
+  $('login').style.display='none';
+  $('whoami').textContent=(SESSION.role==='admin'?'Admin':SESSION.name)+' · '+SESSION.role;
+  const tabs=TABS.filter(t=>t.roles.includes(SESSION.role));
+  const bar=$('tabbar'), frames=$('frames');
+  bar.innerHTML=''; frames.innerHTML='';
+  tabs.forEach((t,idx)=>{
+    const b=document.createElement('button'); b.textContent=t.label; b.onclick=()=>activate(t.id); b.dataset.tab=t.id; bar.appendChild(b);
+    const f=document.createElement('iframe'); f.dataset.tab=t.id; f.dataset.src=srcFor(t); frames.appendChild(f);
+  });
+  activate(tabs[0].id);
+}
+function activate(id){
+  document.querySelectorAll('#tabbar button').forEach(b=>b.classList.toggle('on',b.dataset.tab===id));
+  document.querySelectorAll('#frames iframe').forEach(f=>{
+    const on=f.dataset.tab===id;
+    if(on && !f.src) f.src=f.dataset.src; // lazy-load on first open
+    f.classList.toggle('on',on);
+  });
+}
+
+// Auto-resume a saved session.
+(function init(){
+  const s=loadSession();
+  if(s && s.role){ SESSION=s; enterApp(); }
+  else { $('login').style.display='flex'; }
+  $('pin').addEventListener('keydown',e=>{ if(e.key==='Enter') loginStaff(); });
+  $('adminkey').addEventListener('keydown',e=>{ if(e.key==='Enter') loginAdmin(); });
+})();
+</script>
+</body>
+</html>
