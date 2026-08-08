@@ -150,6 +150,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const notify = await notifyOwner({ sms, emailSubject: `New supplier order from ${employee}`, emailHtml });
         return res.status(200).json({ ok: true, employee, id, link, notify });
       }
+      case 'auth-check': {
+        // Unified-shell login: a 4-digit PIN => employee (with name); a valid
+        // admin secret (header) => admin. Used to gate tabs by role.
+        if (req.method !== 'POST') return fail(res, 405, 'Use POST');
+        const pin = String(body?.pin || '').trim();
+        if (pin) {
+          const employee = employeeForPin(pin);
+          if (!employee) return fail(res, 401, 'PIN not recognized');
+          return res.status(200).json({ ok: true, role: 'employee', name: employee });
+        }
+        if (authed) return res.status(200).json({ ok: true, role: 'admin', name: 'Admin' });
+        return fail(res, 401, 'Enter a PIN or a valid admin key');
+      }
       case 'pending-orders': {
         if (req.method !== 'GET') return fail(res, 405, 'Use GET');
         if (!requireAuth()) return;
