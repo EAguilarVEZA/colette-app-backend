@@ -151,8 +151,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(200).json({ ok: true, employee, id, link, notify });
       }
       case 'auth-check': {
-        // Unified-shell login: a 4-digit PIN => employee (with name); a valid
-        // admin secret (header) => admin. Used to gate tabs by role.
+        // Unified-shell login:
+        //   • a 4-digit PIN            => employee (with name)
+        //   • admin ID + password      => admin (returns the app secret so the
+        //                                 dashboard's protected calls work — the
+        //                                 owner never sees or types the key)
+        //   • valid admin secret header => admin (legacy)
         if (req.method !== 'POST') return fail(res, 405, 'Use POST');
         const pin = String(body?.pin || '').trim();
         if (pin) {
@@ -160,8 +164,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           if (!employee) return fail(res, 401, 'PIN not recognized');
           return res.status(200).json({ ok: true, role: 'employee', name: employee });
         }
-        if (authed) return res.status(200).json({ ok: true, role: 'admin', name: 'Admin' });
-        return fail(res, 401, 'Enter a PIN or a valid admin key');
+        const id = String(body?.adminId || '').trim();
+        const pw = String(body?.adminPassword || '');
+        if (id || pw) {
+          const ADMIN_ID = process.env.ADMIN_ID, ADMIN_PW = process.env.ADMIN_PASSWORD;
+          if (ADMIN_ID && ADMIN_PW && id === ADMIN_ID && pw === ADMIN_PW) {
+            return res.status(200).json({ ok: true, role: 'admin', name: id, key: process.env.SYNC_SECRET || '' });
+          }
+          return fail(res, 401, 'ID or password not recognized');
+        }
+        if (authed) return res.status(200).json({ ok: true, role: 'admin', name: 'Admin', key: process.env.SYNC_SECRET || '' });
+        return fail(res, 401, 'Enter your PIN, or admin ID + password');
       }
       case 'pending-orders': {
         if (req.method !== 'GET') return fail(res, 405, 'Use GET');
