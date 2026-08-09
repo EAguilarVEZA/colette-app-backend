@@ -1099,3 +1099,39 @@ export async function employeeForPinAsync(pin: string): Promise<string | null> {
   if (team.length === 0 && Object.keys(map).length === 0 && /^\d{3,8}$/.test(raw)) return `Staff · PIN ${raw}`;
   return null;
 }
+
+// ================== Time clock (punches) → Redis ==================
+const PUNCH_KEY = 'colette:punches';
+export interface Punch { id: string; pin: string; name: string; type: 'in' | 'out'; at: number }
+
+export async function listPunches(): Promise<Punch[]> {
+  const r = await kvREST(['LRANGE', PUNCH_KEY, 0, 4000]);
+  let arr: any = null;
+  if (r.ok) arr = r.result;
+  else { const c = await redisTCP(); if (c) { try { arr = await c.lrange(PUNCH_KEY, 0, 4000); } catch { arr = null; } } }
+  if (!Array.isArray(arr)) return [];
+  return arr.map((s: string) => { try { return JSON.parse(s); } catch { return null; } }).filter(Boolean);
+}
+async function addPunch(p: Punch): Promise<void> {
+  const s = JSON.stringify(p);
+  const r = await kvREST(['LPUSH', PUNCH_KEY, s]);
+  if (r.ok) { await kvREST(['LTRIM', PUNCH_KEY, 0, 5000]); return; }
+  const c = await redisTCP(); if (c) { try { await c.lpush(PUNCH_KEY, s); await c.ltrim(PUNCH_KEY, 0, 5000); } catch { /* best effort */ } }
+}
+// Toggle clock in/out for a PIN. Returns null if the PIN isn't a known employee.
+export async function togglePunch(pin: string): Promise<{ name: string; type: 'in' | 'out'; at: number } | null> {
+  const name = await employeeForPinAsync(pin); if (!name) return null;
+  const events = await listPunches(); // newest-first
+  const last = events.find((e) => String(e.pin) === String(pin));
+  const type: 'in' | 'out' = (last && last.type === 'in') ? 'out' : 'in';
+  const at = Date.now();
+  await addPunch({ id: at.toString(36) + Math.random().toString(36).slice(2, 6), pin: String(pin), name, type, at });
+  return { name, type, at };
+}
+export async function clockStatus(pin: string): Promise<{ name: string | null; clockedIn: boolean; since: number | null }> {
+  const name = await employeeForPinAsync(pin);
+  const events = await listPunches();
+  const last = events.find((e) => String(e.pin) === String(pin));
+  const clockedIn = !!(last && last.type === 'in');
+  return { name, clockedIn, since: clockedIn ? last!.at : null };
+}
