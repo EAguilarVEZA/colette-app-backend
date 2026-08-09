@@ -1154,6 +1154,26 @@ export async function saveShifts(shifts: Record<string, any>): Promise<void> {
   const c = await redisTCP(); if (c) { try { await c.set(SHIFTS_KEY, s); } catch { /* best effort */ } }
 }
 
+// ---- Alon (FlexiBake) orders, keyed by delivery date "YYYY-MM-DD" ----
+// Value per date: { lines:[{code, qty}], at, source:'alon'|'manual' }. The daily
+// scraper writes the REAL order it reads from FlexiBake; the owner can adjust in
+// the dashboard calendar (source flips to 'manual').
+const ALON_ORDERS_KEY = 'colette:alon_orders';
+export async function getAlonOrders(): Promise<Record<string, any>> {
+  const r = await kvREST(['GET', ALON_ORDERS_KEY]);
+  if (r.ok) { try { return r.result ? JSON.parse(r.result) : {}; } catch { return {}; } }
+  const c = await redisTCP(); if (c) { try { const v = await c.get(ALON_ORDERS_KEY); return v ? JSON.parse(v) : {}; } catch { return {}; } }
+  return {};
+}
+export async function saveAlonOrder(date: string, lines: any[], source = 'manual'): Promise<Record<string, any>> {
+  const all = await getAlonOrders();
+  all[date] = { lines: Array.isArray(lines) ? lines : [], at: Date.now(), source };
+  const s = JSON.stringify(all);
+  const r = await kvREST(['SET', ALON_ORDERS_KEY, s]);
+  if (!r.ok) { const c = await redisTCP(); if (c) { try { await c.set(ALON_ORDERS_KEY, s); } catch { /* best effort */ } } }
+  return all[date];
+}
+
 export interface TimeOff { id: string; name: string; pin: string; from: string; to: string; reason?: string; status: 'pending' | 'approved' | 'denied'; at: number }
 export async function listTimeOff(): Promise<TimeOff[]> {
   const r = await kvREST(['LRANGE', TIMEOFF_KEY, 0, 200]);
