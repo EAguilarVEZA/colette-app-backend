@@ -100,7 +100,13 @@ const run = async () => {
       if (orderNo && deliveryDate === targetDate) todays.push(orderNo);
     }
     log(`Delivery ${targetDate}: ${todays.length} order(s) →`, todays.join(', ') || 'none');
-    if (!todays.length) { log('Nothing to sync for that delivery date.'); await browser.close(); return; }
+    if (!todays.length) {
+      // Fresh-day policy: start every day at zero. No delivery today → leave everything at 0.
+      log('No delivery for that date — zeroing all inventory for a clean start.');
+      await resetZero();
+      await browser.close();
+      return;
+    }
 
     // 3) Open each order and read line items
     const agg = {}; // code -> qty
@@ -135,9 +141,16 @@ const run = async () => {
 
     const lines = Object.entries(agg).map(([code, qty]) => ({ code, qty }));
     log('Aggregated lines:', JSON.stringify(lines));
-    if (!lines.length) { log('No positive quantities found.'); await browser.close(); return; }
 
-    // 4) Push to Clover backend (it adds to stock)
+    // Fresh-day policy: zero EVERYTHING first, then load ONLY today's delivery.
+    // Done here (after reading Alon so a login failure never wipes stock) — the
+    // window where stock is 0 is just the moment between reset and receive.
+    log('Zeroing all Clover stock before loading today’s numbers…');
+    await resetZero();
+
+    if (!lines.length) { log('No positive quantities found — inventory left at zero for today.'); await browser.close(); return; }
+
+    // 4) Push to Clover backend. Stock was just zeroed, so add == set to today's qty.
     const res = await fetch(`${BACKEND}/api/ops`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-colette-secret': SECRET },
@@ -289,8 +302,28 @@ const placeOrder = async () => {
   }
 };
 
+// Warm the edge cache each morning so the dashboard opens instantly (the heavy
+// reorder + stockout queries are precomputed and cached ~20h). No Alon/Clover
+// login needed — just HTTP GETs against the backend.
+const warm = async () => {
+  const dows = [0, 2, 3, 4, 5, 6]; // skip Monday (closed)
+  for (const d of dows) {
+    const t0 = Date.now();
+    const r = await fetch(`${BACKEND}/api/ops?action=reorder-plan&dow=${d}`);
+    log(`warmed reorder dow=${d}: ${r.status} (${Date.now() - t0}ms)`);
+  }
+  const t1 = Date.now();
+  const s = await fetch(`${BACKEND}/api/ops?action=stockout&days=90`);
+  log(`warmed stockout: ${s.status} (${Date.now() - t1}ms)`);
+  const t2 = Date.now();
+  const m = await fetch(`${BACKEND}/api/ops?action=metrics&days=35`);
+  log(`warmed metrics: ${m.status} (${Date.now() - t2}ms)`);
+  log('Cache warm complete.');
+};
+
 const main = process.env.TASK === 'reset' ? resetZero
   : process.env.TASK === 'setcosts' ? setCosts
   : process.env.TASK === 'place' ? placeOrder
+  : process.env.TASK === 'warm' ? warm
   : run;
 main().catch((e) => { console.error(e); process.exit(1); });
