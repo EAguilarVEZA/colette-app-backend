@@ -84,6 +84,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(200).json({ ok: true, placed: false, dispatched: false, targetDay, lines,
           note: 'Approval recorded. Auto-submit to Alon activates after the new-order recon + placement step.' });
       }
+      case 'run-task': {
+        // On-demand trigger for the FlexiBake GitHub workflow (sync / reset).
+        // Used by the dashboard "Sync now" button. Secret-gated; needs GH_DISPATCH_TOKEN.
+        if (req.method !== 'POST') return fail(res, 405, 'Use POST');
+        if (!requireAuth()) return;
+        const task = String(body?.task || 'sync').toLowerCase();
+        if (!['sync', 'reset', 'setcosts'].includes(task)) return fail(res, 400, 'task must be sync | reset | setcosts');
+        const token = process.env.GH_DISPATCH_TOKEN;
+        const repo = process.env.GH_REPO || 'EAguilarVEZA/colette-app-backend';
+        if (!token) {
+          return res.status(200).json({ ok: true, dispatched: false,
+            note: 'On-demand trigger needs GH_DISPATCH_TOKEN set in Vercel. Until then, the daily schedule still runs automatically.' });
+        }
+        const gh = await fetch(`https://api.github.com/repos/${repo}/actions/workflows/flexibake-sync.yml/dispatches`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json', 'User-Agent': 'colette-dashboard' },
+          body: JSON.stringify({ ref: 'main', inputs: { task, date: String(body?.date || '') } }),
+        });
+        if (gh.status === 204) return res.status(200).json({ ok: true, dispatched: true, task });
+        const detail = await gh.text();
+        return fail(res, 502, 'Dispatch failed', detail);
+      }
       case 'customers-export': {
         if (req.method !== 'GET') return fail(res, 405, 'Use GET');
         if (!requireAuth()) return;
@@ -285,7 +307,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(200).json({ ok: true });
       }
       default:
-        return fail(res, 400, 'Unknown action. Use reorder-suggest | reorder-plan | stockout | metrics | place-order | set-costs | recent-orders | notify-customer | customers-export | inventory-receive | inventory-reset-zero | submit-order | pending-orders | resolve-order');
+        return fail(res, 400, 'Unknown action. Use reorder-suggest | reorder-plan | stockout | metrics | place-order | run-task | set-costs | recent-orders | notify-customer | customers-export | inventory-receive | inventory-reset-zero | submit-order | pending-orders | resolve-order');
     }
   } catch (e: any) {
     fail(res, e?.status || 502, `${action} failed`, e?.body ?? String(e));
