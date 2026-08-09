@@ -106,7 +106,7 @@ const run = async () => {
     // and open/advance orders (qty inside an editable <input>). Returns rows +
     // a small debug sample so a run's log reveals the layout if something's off.
     const parseOrder = () => page.evaluate(() => {
-      const out = []; const dbg = [];
+      const out = []; const all = []; const dbg = [];
       document.querySelectorAll('tr').forEach((tr) => {
         const tds = tr.querySelectorAll('td');
         if (tds.length < 3) return;
@@ -117,6 +117,7 @@ const run = async () => {
         // product name = the description cell (first text cell with letters that isn't the code)
         let name = '';
         for (const td of tds) { const t = (td.innerText || '').trim(); if (t && t !== code && /[A-Za-z]{2,}/.test(t) && !/^\$/.test(t)) { name = t.replace(/\s+/g, ' '); break; } }
+        all.push({ code, name }); // every product row (for the full catalog, incl. qty 0)
         // qty = any input in the row with a numeric value (property OR attribute),
         // else a small integer text cell that isn't the code.
         let qty = 0;
@@ -128,12 +129,13 @@ const run = async () => {
         if (qty > 0) out.push({ code, name, qty });
         if (dbg.length < 4) dbg.push(((tr.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 120)) + ' [inputs:' + tr.querySelectorAll('input').length + ']');
       });
-      return { out, dbg };
+      return { out, all, dbg };
     });
 
     // 3) Read EACH order and save it to the per-date Alon store, so the dashboard
     // calendar shows the REAL order Alon has for any date — including advance orders.
-    const byDate = {}; // iso -> { code: qty }
+    const byDate = {};   // iso -> { code: {name, qty} }
+    const catalog = {};  // code -> name (union of every product seen — the full Alon list)
     for (const o of allOrders) {
       try {
         await openOrders();
@@ -159,6 +161,7 @@ const run = async () => {
           catch { await page.waitForTimeout(1500); }
         }
         const out = parsed.out;
+        for (const c of (parsed.all || [])) { if (c.code && (!(c.code in catalog) || (!catalog[c.code] && c.name))) catalog[c.code] = c.name || ''; }
         const iso = toISO(o.deliveryDate);
         byDate[iso] = byDate[iso] || {};
         for (const li of out) { const e = byDate[iso][li.code] || { name: li.name || '', qty: 0 }; e.qty += li.qty; if (!e.name && li.name) e.name = li.name; byDate[iso][li.code] = e; }
@@ -174,6 +177,19 @@ const run = async () => {
         });
         log(`Saved Alon order for ${iso} → dashboard (${lns.length} items).`);
       } catch (e) { log('Could not save Alon order for', iso, String(e)); }
+    }
+
+    // Save the full Alon product catalog (union of every product seen) so the
+    // dashboard can offer the ENTIRE list to order, not just curated items.
+    const catList = Object.entries(catalog).map(([code, name]) => ({ code, name }));
+    if (catList.length) {
+      try {
+        await fetch(`${BACKEND}/api/ops?action=alon-catalog-save`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'x-colette-secret': SECRET },
+          body: JSON.stringify({ lines: catList }),
+        });
+        log(`Saved Alon catalog: ${catList.length} products.`);
+      } catch (e) { log('Could not save Alon catalog:', String(e)); }
     }
 
     // Today's delivery lines drive the Clover inventory sync.
