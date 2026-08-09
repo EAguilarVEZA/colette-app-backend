@@ -12,7 +12,7 @@ import {
   employeeForPin, employeeForPinAsync, getTeam, saveTeam, buildOrderLink, savePendingOrder, listPendingOrders, resolvePendingOrder, notifyOwner,
   togglePunch, clockStatus, listPunches,
   getShifts, saveShifts, listTimeOff, addTimeOff, resolveTimeOff,
-  getAlonOrders, saveAlonOrder,
+  getAlonOrders, saveAlonOrder, getAlonCatalog, saveAlonCatalog,
 } from '../lib/clover.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -106,6 +106,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (gh.status === 204) return res.status(200).json({ ok: true, dispatched: true, task });
         const detail = await gh.text();
         return fail(res, 502, 'Dispatch failed', detail);
+      }
+      case 'alon-catalog-get': {
+        // Full Alon product list for the dashboard order table.
+        if (req.method !== 'GET') return fail(res, 405, 'Use GET');
+        res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=3600');
+        return res.status(200).json({ ok: true, catalog: await getAlonCatalog() });
+      }
+      case 'alon-catalog-save': {
+        if (req.method !== 'POST') return fail(res, 405, 'Use POST');
+        if (!requireAuth()) return;
+        const lines = Array.isArray(body?.lines) ? body.lines : [];
+        const count = await saveAlonCatalog(lines);
+        return res.status(200).json({ ok: true, count });
       }
       case 'alon-order-dates': {
         // Which delivery dates have a stored Alon order (for calendar markers).
@@ -344,7 +357,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(200).json({ ok: true });
       }
       default:
-        return fail(res, 400, 'Unknown action. Use reorder-suggest | reorder-plan | stockout | metrics | place-order | run-task | alon-order-get | alon-order-save | alon-order-dates | set-costs | recent-orders | notify-customer | customers-export | inventory-receive | inventory-reset-zero | submit-order | pending-orders | resolve-order');
+        return fail(res, 400, 'Unknown action. Use reorder-suggest | reorder-plan | stockout | metrics | place-order | run-task | alon-order-get | alon-order-save | alon-order-dates | alon-catalog-get | alon-catalog-save | set-costs | recent-orders | notify-customer | customers-export | inventory-receive | inventory-reset-zero | submit-order | pending-orders | resolve-order');
     }
   } catch (e: any) {
     fail(res, e?.status || 502, `${action} failed`, e?.body ?? String(e));
