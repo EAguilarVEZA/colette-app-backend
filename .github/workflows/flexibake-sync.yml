@@ -2,7 +2,9 @@ name: FlexiBake → Clover inventory sync
 
 on:
   schedule:
-    - cron: '0 21 * * *'   # 21:00 UTC = ~5pm ET; runs daily after ordering hours
+    - cron: '0 10 * * *'   # 10:00 UTC = ~6am ET; morning zero + load today's delivery (fresh start)
+    - cron: '0 11 * * *'   # 11:00 UTC = ~7am ET; warm the dashboard caches
+    - cron: '0 21 * * *'   # 21:00 UTC = ~5pm ET; re-sync in case a delivery line was added during the day
   workflow_dispatch:         # manual "Run workflow" from the Actions tab
     inputs:
       task:
@@ -43,7 +45,7 @@ jobs:
           FLEXIBAKE_PASS: ${{ secrets.FLEXIBAKE_PASS }}
           BACKEND_URL: ${{ secrets.BACKEND_URL }}
           SYNC_SECRET: ${{ secrets.SYNC_SECRET }}
-          TASK: ${{ github.event.inputs.task || 'sync' }}
+          TASK: ${{ github.event.inputs.task || (github.event.schedule == '0 11 * * *' && 'warm' || 'sync') }}
           SYNC_DATE: ${{ github.event.inputs.date || '' }}
           PLACE_DATE: ${{ github.event.inputs.date || '' }}
           PLACE_MODE: ${{ github.event.inputs.place_mode || 'review' }}
