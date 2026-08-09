@@ -117,7 +117,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (req.method !== 'POST') return fail(res, 405, 'Use POST');
         if (!requireAuth()) return;
         const lines = Array.isArray(body?.lines) ? body.lines : [];
-        const count = await saveAlonCatalog(lines);
+        const count = await saveAlonCatalog(lines, body?.replace === true);
         return res.status(200).json({ ok: true, count });
       }
       case 'alon-order-dates': {
