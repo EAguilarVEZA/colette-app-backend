@@ -102,21 +102,30 @@ const run = async () => {
     }
     log(`Found ${allOrders.length} order(s):`, allOrders.map((o) => `${o.orderNo}@${o.deliveryDate}`).join(', ') || 'none');
 
-    // Reads one open order table (works for editable inputs and read-only text).
+    // Reads one order table. Handles BOTH placed orders (qty as read-only text)
+    // and open/advance orders (qty inside an editable <input>). Returns rows +
+    // a small debug sample so a run's log reveals the layout if something's off.
     const parseOrder = () => page.evaluate(() => {
-      const out = [];
+      const out = []; const dbg = [];
       document.querySelectorAll('tr').forEach((tr) => {
         const tds = tr.querySelectorAll('td');
         if (tds.length < 3) return;
-        const code = (tds[0].innerText || '').trim();
-        if (!/^\d+$/.test(code)) return;
+        // product code = tds[0] if it's 3–7 digits, else first such cell in the row
+        let code = (tds[0].innerText || '').trim();
+        if (!/^\d{3,7}$/.test(code)) { code = null; for (const td of tds) { const t = (td.innerText || '').trim(); if (/^\d{3,7}$/.test(t)) { code = t; break; } } }
+        if (!code) return;
+        // qty = any input in the row with a numeric value (property OR attribute),
+        // else a small integer text cell that isn't the code.
         let qty = 0;
-        const inp = tr.querySelector('input');
-        if (inp && /\d/.test(inp.value || '')) qty = parseFloat(String(inp.value).replace(/[^0-9.]/g, ''));
-        if (!qty) { for (let i = 1; i < tds.length; i++) { const t = (tds[i].innerText || '').trim(); if (/^\d+$/.test(t)) { qty = parseInt(t, 10); break; } } }
+        for (const inp of tr.querySelectorAll('input')) {
+          const v = String(inp.value || inp.getAttribute('value') || '').replace(/[^0-9.]/g, '');
+          if (v && parseFloat(v) > 0) { qty = parseFloat(v); break; }
+        }
+        if (!qty) { for (const td of tds) { const t = (td.innerText || '').trim(); if (t !== code && /^\d{1,3}$/.test(t) && +t > 0) { qty = +t; break; } } }
         if (qty > 0) out.push({ code, qty });
+        if (dbg.length < 4) dbg.push(((tr.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 120)) + ' [inputs:' + tr.querySelectorAll('input').length + ']');
       });
-      return out;
+      return { out, dbg };
     });
 
     // 3) Read EACH order and save it to the per-date Alon store, so the dashboard
@@ -131,17 +140,26 @@ const run = async () => {
         // page.evaluate throws "execution context destroyed". Wait for a
         // product-code row to appear, then read with one retry.
         await page.waitForLoadState('domcontentloaded').catch(() => {});
-        await page.waitForFunction(() => [...document.querySelectorAll('td')].some((td) => /^\d{3,}$/.test((td.innerText || '').trim())), { timeout: 15000 }).catch(() => {});
-        await page.waitForTimeout(1200);
-        let out = [];
+        // Wait until product-code rows exist AND quantities are present (as text
+        // OR as populated inputs — open orders fill their input values via AJAX).
+        await page.waitForFunction(() => {
+          const rows = [...document.querySelectorAll('tr')];
+          const hasCode = rows.some((tr) => [...tr.querySelectorAll('td')].some((td) => /^\d{3,7}$/.test((td.innerText || '').trim())));
+          const hasQty = rows.some((tr) => [...tr.querySelectorAll('input')].some((i) => /\d/.test(String(i.value || i.getAttribute('value') || ''))))
+            || rows.some((tr) => { const t = [...tr.querySelectorAll('td')].map((td) => (td.innerText || '').trim()); return t.some((x) => /^\d{3,7}$/.test(x)) && t.some((x) => /^\d{1,3}$/.test(x)); });
+          return hasCode && hasQty;
+        }, { timeout: 15000 }).catch(() => {});
+        await page.waitForTimeout(2000);
+        let parsed = { out: [], dbg: [] };
         for (let attempt = 0; attempt < 2; attempt++) {
-          try { out = await parseOrder(); break; }
+          try { parsed = await parseOrder(); if (parsed.out.length) break; await page.waitForTimeout(1500); }
           catch { await page.waitForTimeout(1500); }
         }
+        const out = parsed.out;
         const iso = toISO(o.deliveryDate);
         byDate[iso] = byDate[iso] || {};
         for (const li of out) byDate[iso][li.code] = (byDate[iso][li.code] || 0) + li.qty;
-        log(`  Order ${o.orderNo} (${iso}): ${out.length} line(s).`);
+        log(`  Order ${o.orderNo} (${iso}): ${out.length} line(s).` + (out.length === 0 ? ' SAMPLE ROWS: ' + JSON.stringify(parsed.dbg) : ''));
       } catch (e) { log(`  Order ${o.orderNo}: read failed —`, String(e).slice(0, 120)); }
     }
     for (const [iso, agg] of Object.entries(byDate)) {
