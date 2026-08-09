@@ -10,6 +10,7 @@ import {
   applyCors, assertConfigured, fail,
   suggestReorder, suggestReorderSmart, getAllCustomers, receiveStock, resetStockZero, salesSummary, setItemCosts, setItemPrices, stockoutAnalysis, getRecentOrders, notifyCustomer,
   employeeForPin, employeeForPinAsync, getTeam, saveTeam, buildOrderLink, savePendingOrder, listPendingOrders, resolvePendingOrder, notifyOwner,
+  togglePunch, clockStatus, listPunches,
 } from '../lib/clover.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -175,6 +176,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
         if (authed) return res.status(200).json({ ok: true, role: 'admin', name: 'Admin', key: process.env.SYNC_SECRET || '' });
         return fail(res, 401, 'Enter your PIN, or admin ID + password');
+      }
+      case 'punch': {
+        // Employee clock in/out — PIN-gated (staff use it without the admin key).
+        if (req.method !== 'POST') return fail(res, 405, 'Use POST');
+        const r = await togglePunch(String(body?.pin || ''));
+        if (!r) return fail(res, 401, 'PIN not recognized');
+        return res.status(200).json({ ok: true, ...r });
+      }
+      case 'clock-status': {
+        if (req.method !== 'POST') return fail(res, 405, 'Use POST');
+        const pin = String(body?.pin || '');
+        const st = await clockStatus(pin);
+        if (!st.name) return fail(res, 401, 'PIN not recognized');
+        return res.status(200).json({ ok: true, ...st });
+      }
+      case 'punches': {
+        // All clock events for payroll (admin only).
+        if (req.method !== 'GET') return fail(res, 405, 'Use GET');
+        if (!requireAuth()) return;
+        return res.status(200).json({ ok: true, punches: await listPunches(), team: await getTeam() });
       }
       case 'team-list': {
         if (req.method !== 'GET') return fail(res, 405, 'Use GET');
