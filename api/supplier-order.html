@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Colette — Supplier Order Sheet</title>
+<style>
+:root{color-scheme:light;--gold:#c99a3b;--ink:#2a2118;--cream:#f7f1e7;--card:#fffdf9;--line:#e7dcc7;--muted:#7a6a52}
+*{box-sizing:border-box}body{margin:0;background:var(--cream);color:var(--ink);font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+.wrap{max-width:900px;margin:0 auto;padding:22px 16px 60px}
+h1{font-family:Georgia,serif;font-size:1.6rem;margin:0}
+.sub{color:var(--muted);font-size:.9rem;margin:4px 0 18px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px 18px;margin-bottom:18px}
+.card h3{margin:0 0 4px;font-family:Georgia,serif}
+.suphead{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px}
+table{width:100%;border-collapse:collapse;font-size:.9rem}
+td,th{text-align:left;padding:7px 6px;border-bottom:1px solid var(--line);vertical-align:middle}
+th{color:var(--muted);font-weight:600;font-size:.74rem;text-transform:uppercase}
+.right{text-align:right}.muted{color:var(--muted)}
+input[type=number]{width:48px;text-align:center;padding:6px;border:1px solid var(--line);border-radius:8px;font-size:.95rem}
+.stepper{display:inline-flex;align-items:center;gap:6px;justify-content:flex-end}
+.stepper button{width:30px;height:30px;border:1px solid var(--line);background:var(--cream);border-radius:8px;font-size:1.1rem;font-weight:700;line-height:1;cursor:pointer;color:#1a1206;padding:0}
+.stepper button:hover{background:var(--gold)}
+.stepper input{width:44px}
+.btn{background:var(--gold);color:#1a1206;border:none;border-radius:22px;padding:11px 22px;font-weight:700;cursor:pointer;font-size:.95rem}
+.btn.ghost{background:none;border:1px solid var(--line);color:var(--ink)}
+.small{font-size:.8rem}
+a{color:#8a6a1f}
+#out{white-space:pre-wrap;background:var(--cream);border:1px solid var(--line);border-radius:10px;padding:12px;margin-top:12px;font-family:ui-monospace,Menlo,monospace;font-size:.82rem;display:none}
+.itemname{font-weight:600}
+#load-banner{display:none;background:#e8f3e8;border:1px solid #b6d7b6;border-radius:12px;padding:14px 16px;margin-bottom:18px;color:#25502a}
+#submit-bar{position:sticky;bottom:0;background:var(--cream);border-top:2px solid var(--gold);margin:22px -20px -20px;padding:10px 16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;box-shadow:0 -4px 14px rgba(0,0,0,.06)}
+#submit-bar input{width:110px;text-align:center;padding:8px;border:1px solid var(--line);border-radius:8px;font-size:.95rem}
+#submit-bar .btn{font-size:.95rem}
+#submit-status{font-size:.9rem}
+/* When signed in through the app (PIN already passed in), hide the PIN field +
+   helper text so the bar is slim and the button owns the row — key on mobile. */
+body.pinned #submit-bar .needs-pin{display:none}
+body.pinned #submit-bar{padding:8px 12px}
+body.pinned #submit-bar .btn{flex:1 1 auto}
+@media (max-width:520px){
+  #submit-bar{padding:8px 12px;gap:8px}
+  #submit-bar .btn{padding:11px 12px;flex:1 1 100%;text-align:center}
+  #submit-bar .needs-pin{font-size:.82rem}
+}
+.owner-only{display:none}
+/* Employees see only quantities + submit. The Send/Open/Fill controls appear
+   only in owner mode (opened via a submitted-order link). */
+.owner-actions{display:none}
+body.owner-mode .owner-actions{display:flex}
+body.owner-mode #submit-bar{display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🛒 Supplier Order Sheet</h1>
+  <div class="sub">Enter how many of each you need for Costco, Restaurant Depot, and Publix, then enter your PIN and press <b>Submit order to Colette AI Assistant</b>. The assistant notifies the owner and the order gets placed.</div>
+  <div id="load-banner"></div>
+
+  <div class="card">
+    <div class="suphead">
+      <div><h3>Costco Business Center</h3><div class="small muted">Delivery to 2225 Old Milton · add ≥ $250 to avoid the $25 surcharge</div></div>
+      <div class="small muted" id="costco-total"></div>
+    </div>
+    <table><thead><tr><th>Item</th><th>Item #</th><th class="right">Unit $</th><th class="right">Qty</th></tr></thead>
+    <tbody id="costco-rows"></tbody></table>
+    <div class="owner-actions" style="margin-top:14px;gap:10px;flex-wrap:wrap;align-items:center">
+      <button class="btn" onclick="sendCostco()">🥐 Send to Costco</button>
+      <button class="btn ghost" onclick="window.open('https://www.costcobusinessdelivery.com/OrderByItemsDisplayViewBD','_blank')">Open Costco order page</button>
+      <button class="btn ghost" onclick="copyOrder('costco')">Copy list</button>
+    </div>
+    <div class="small muted owner-actions" id="costco-status" style="margin-top:8px">1) Set quantities → <b>Send to Costco</b>. 2) <b>Open Costco order page</b> → click the gold “Fill Costco cart” button that appears. 3) Review &amp; place the order.</div>
+    <div id="out"></div>
+  </div>
+
+  <div class="card">
+    <div class="suphead">
+      <div><h3>Restaurant Depot</h3><div class="small muted">via member.restaurantdepot.com (Instacart-powered) · Buy It Again</div></div>
+      <div class="small muted" id="rd-total"></div>
+    </div>
+    <table><thead><tr><th>Item</th><th>SKU</th><th class="right">Unit $</th><th class="right">Qty</th></tr></thead>
+    <tbody id="rd-rows"></tbody></table>
+    <div class="owner-actions" style="margin-top:14px;gap:10px;flex-wrap:wrap;align-items:center">
+      <button class="btn" onclick="sendRD()">🥖 Send to RD</button>
+      <button class="btn ghost" onclick="window.open('https://member.restaurantdepot.com/store/jetro-restaurant-depot/buy_it_again','_blank')">Open RD store</button>
+      <button class="btn ghost" onclick="copyRD()">Copy list</button>
+    </div>
+    <div id="rd-out"></div>
+  </div>
+  <div class="card">
+    <div class="suphead">
+      <div><h3>Instacart / Publix</h3><div class="small muted">Publix delivery via Instacart · search by name (prices vary)</div></div>
+    </div>
+    <table><thead><tr><th>Item</th><th class="right">Qty</th></tr></thead><tbody id="ic-rows"></tbody></table>
+    <div class="owner-actions" style="margin-top:14px;gap:10px;flex-wrap:wrap;align-items:center">
+      <button class="btn" onclick="sendIC()">🥬 Send to Publix</button>
+      <button class="btn ghost" onclick="window.open('https://www.instacart.com/store/publix/storefront','_blank')">Open Publix on Instacart</button>
+      <button class="btn ghost" onclick="copyIC()">Copy list</button>
+    </div>
+    <div id="ic-out"></div>
+  </div>
+
+  <div id="submit-bar">
+    <b class="needs-pin">Ready?</b>
+    <span class="small muted needs-pin">Enter your PIN, then submit — the Colette AI Assistant takes it from here.</span>
+    <input id="emp-pin" class="needs-pin" type="tel" inputmode="numeric" placeholder="Your PIN" maxlength="8" autocomplete="off">
+    <button class="btn" onclick="submitOrder()">📤 Submit to Colette AI</button>
+    <span id="submit-status"></span>
+  </div>
+</div>
+
+<script>
+const BACKEND='https://colette-app-backend.vercel.app';
+// Costco list — from Edgar's supplier list (Aug 2026). Items with an item # (id)
+// auto-fill the cart via the extension; the rest have no Costco # yet, so they
+// still submit to the owner but are added manually. q = default (typical) amount.
+const COSTCO=[
+  {n:'4-Cup Pulp Carrier Tray / Cup Holder',id:'',p:0,q:1},
+  {n:'Almond Milk',id:'',p:0,q:3},
+  {n:'Aluminum Foil',id:'',p:0,q:1},
+  {n:'Apple Juice',id:'',p:0,q:1},
+  {n:'Arugula',id:'',p:0,q:1},
+  {n:'Avocados, 6 ct',id:'647465',p:7.09,q:6},
+  {n:'Kirkland Fully-Cooked Bacon, 1 lb',id:'1601187',p:14.09,q:1},
+  {n:'Black Pepper',id:'',p:0,q:1},
+  {n:'Black Trash Bags (33 Gallon)',id:'',p:0,q:1},
+  {n:'Premium Blueberries, 18 oz',id:'57554',p:4.79,q:1},
+  {n:'Butter (Country Crock)',id:'',p:0,q:1},
+  {n:'Butter, Unsalted',id:'',p:0,q:12},
+  {n:'Capers',id:'',p:0,q:1},
+  {n:'Center Pull Paper Towel Dispenser',id:'',p:0,q:1},
+  {n:'Grape / Cherry Tomatoes, 2 lbs',id:'77053',p:6.79,q:1},
+  {n:'Kirkland Organic Ground Saigon Cinnamon, 10.7 oz',id:'1124845',p:6.09,q:1},
+  {n:'Clorox Bleach',id:'',p:0,q:1},
+  {n:'Coca-Cola',id:'',p:0,q:1},
+  {n:'Coca-Cola Zero',id:'',p:0,q:1},
+  {n:'Cream Cheese (Philadelphia)',id:'',p:0,q:1},
+  {n:'Dill',id:'',p:0,q:1},
+  {n:'Dish Soap',id:'',p:0,q:1},
+  {n:'Bella Sun Luci Sun-Dried Tomatoes, 35 oz',id:'710944',p:15.59,q:1},
+  {n:'Dulce de Leche',id:'',p:0,q:1},
+  {n:'Kirkland Large Eggs, Cage Free, 5 dz',id:'1025795',p:9.79,q:1},
+  {n:'Fabuloso Cleaner',id:'',p:0,q:1},
+  {n:'Feta Cheese',id:'',p:0,q:1},
+  {n:'Food Service Film Roll w/ Safety Blade (27.8" × 3000\')',id:'',p:0,q:1},
+  {n:'Granola',id:'',p:0,q:1},
+  {n:'Granulated Sugar (50 lb Bag)',id:'',p:0,q:1},
+  {n:'Greek Yogurt',id:'',p:0,q:1},
+  {n:'Green Beans',id:'',p:0,q:1},
+  {n:"Land O'Lakes Half & Half, 1 qt",id:'673667',p:2.99,q:1},
+  {n:'Hand Paper Towels (Cascades 2-Ply Center Pull)',id:'',p:0,q:1},
+  {n:"Hershey's Chocolate",id:'',p:0,q:1},
+  {n:'Honey',id:'',p:0,q:1},
+  {n:'Lemons',id:'',p:0,q:1},
+  {n:'Lysol Bathroom Cleaner',id:'',p:0,q:1},
+  {n:'Madeleines',id:'',p:0,q:1},
+  {n:'Marina Salt',id:'',p:0,q:1},
+  {n:'Mayonnaise (1 Gallon)',id:'',p:0,q:1},
+  {n:'Kirkland Whole Milk, 1 gal',id:'3',p:4.72,q:1},
+  {n:'Mozzarella Cheese (Thin Sliced)',id:'',p:0,q:1},
+  {n:'Napkins (Costco)',id:'',p:0,q:1},
+  {n:'Nutella',id:'',p:0,q:2},
+  {n:'Califia Cafe Oatmilk, 32 oz, 6 ct',id:'1503826',p:17.59,q:3},
+  {n:'Palmiers',id:'',p:0,q:1},
+  {n:'Paper Towels',id:'',p:0,q:1},
+  {n:'Perrier',id:'',p:0,q:1},
+  {n:'Kirkland Imported Basil Pesto, 22 oz',id:'990551',p:11.39,q:1},
+  {n:'Pine Nuts',id:'',p:0,q:1},
+  {n:'Plastic Trash Bags (13 Gallon)',id:'',p:0,q:1},
+  {n:'Potatoes',id:'',p:0,q:1},
+  {n:'Powdered Sugar',id:'',p:0,q:1},
+  {n:'Prosciutto',id:'',p:0,q:1},
+  {n:'Raspberries',id:'',p:0,q:1},
+  {n:'Red Wine Vinegar',id:'',p:0,q:1},
+  {n:'Shallots',id:'',p:0,q:1},
+  {n:'Skim Milk',id:'',p:0,q:1},
+  {n:'Kirkland Smoked Salmon, 12 oz, 2 ct',id:'1267000',p:27.69,q:2},
+  {n:'Sparkling Water',id:'',p:0,q:40},
+  {n:'Sponges',id:'',p:0,q:1},
+  {n:'Organic Spring Salad Mix, 1 lb',id:'48757',p:5.99,q:1},
+  {n:'Sriracha',id:'',p:0,q:1},
+  {n:'Strawberries',id:'',p:0,q:1},
+  {n:'Sliced Chicken Cordon Bleu',id:'',p:0,q:1},
+  {n:'Toilet Bowl Cleaner Refill (Lysol)',id:'',p:0,q:1},
+  {n:'Toilet Paper (Cascade / Celtic, 2-Ply)',id:'',p:0,q:1},
+  {n:'Tomatoes (Large)',id:'',p:0,q:6},
+  {n:'Wild Planet Albacore Tuna, 5 oz, 6 ct',id:'7552',p:20.19,q:1},
+  {n:'Turkey',id:'',p:0,q:2},
+  {n:'White Pepper',id:'',p:0,q:1},
+  {n:'White Vinegar',id:'',p:0,q:2},
+  {n:'Whipped Cream',id:'',p:0,q:3},
+  {n:'Soules Grilled Chicken Breast Strips, 32 oz',id:'1716914',p:13.59,q:1},
+  {n:'Kirkland 2% Milk, 1 gal',id:'8',p:4.72,q:1},
+];
+// Restaurant Depot catalog — full Buy It Again (member.restaurantdepot.com / Instacart-powered).
+// In-stock items; default qty 0 (staff enter what they need). Excludes sponsored ads.
+const RD=[
+  {n:'Southern Champion Bakery Box 10x10x4, 100 ct',id:'30012',p:84.51,q:0},
+  {n:'Southern Champion Bakery Box 6x6x4, 250 ct',id:'2570037',p:108.78,q:0},
+  {n:'Southern Champion White Cake Box 10x10x5.5, 100 ct',id:'30013',p:103.84,q:0},
+  {n:'Southern Champion White Bakery Cake 12x12x6, 50/cs',id:'23265',p:78.96,q:0},
+  {n:'Sabert 9x9x3 Clamshell 1-comp, 100 ct',id:'761635',p:47.41,q:0},
+  {n:'Sabert 10x10x2.5 Clamshell 1-comp',id:'761631',p:57.80,q:0},
+  {n:'Sabert 10x10x2.5 Clamshell 3-comp',id:'761632',p:57.42,q:0},
+  {n:'Sabert 8in Clamshell 1-comp',id:'761634',p:41.34,q:0},
+  {n:'Pactiv 5x5x2.5 Clear Hinged Container, 375 ct',id:'760492',p:47.76,q:0},
+  {n:'Pactiv 6x6x3 Clear Hinged Smart-Lock, 500 ct',id:'760131',p:56.95,q:0},
+  {n:'Sunset TF-81-RD 8in Hinged Container, 150 ct',id:'761585',p:39.24,q:0},
+  {n:'Sunset 9in 3-comp Natural PFAS Container, 50 ct',id:'761756',p:21.48,q:0},
+  {n:'Sunset 8in 3-comp Natural PFAS Container, 50 ct',id:'761752',p:19.22,q:0},
+  {n:'Sunset 6in Natural PFAS Container, 50 ct',id:'761748',p:10.69,q:0},
+  {n:'Hubei White Hinged Container 9x9x1, 150 ct',id:'761753',p:21.11,q:0},
+  {n:'Hubei White Hinged Container 9x6, 200 ct',id:'761757',p:15.97,q:0},
+  {n:'Hubei White Hinged Container 6in, 400 ct',id:'761747',p:10.69,q:0},
+  {n:'CuBEware 16oz Black Rect. Microwave Container, 150 ct',id:'3290084',p:49.24,q:0},
+  {n:'Sunset Pizza Box Brown 10x2, 50 ct',id:'23167',p:15.27,q:0},
+  {n:'Kari-Out 10x7 Tripak Micro Oblong Black, 100 ct',id:'761635b',p:101.64,q:0},
+  {n:'Thank You Take-Out Bags 19x10x19, 250/cs',id:'760443',p:43.06,q:0},
+  {n:'Duro 8lb White Shopping Bags, 500 ct',id:'75169',p:24.75,q:0},
+  {n:'Duro 6lb White Paper Bags, 500 ct',id:'75168',p:22.20,q:0},
+  {n:'Heavy Duty Brown Grocery Bags 8lb, 500 ct',id:'3090024',p:22.48,q:0},
+  {n:'Skyline 33 gal Trash Bags, 500 ct',id:'32292',p:48.19,q:0},
+  {n:'Glad Tall Kitchen Quick-Tie Bags 13 gal, 200 ct',id:'2320055',p:29.43,q:0},
+  {n:'Celtic 2-Ply Dinner Napkins',id:'2280059',p:63.24,q:0},
+  {n:'Cascade/Celtic Bath Tissue 2-ply, 12 rolls',id:'1180133',p:28.15,q:0},
+  {n:'Cascades 2-Ply Center Pull Paper Towel, 6/550',id:'1180015',p:34.98,q:0},
+  {n:'Celtic White Hardwound Towel Roll, 12 ct',id:'51017',p:43.13,q:0},
+  {n:'San Jamar Center-Pull Towel Dispenser',id:'53790',p:90.33,q:0},
+  {n:'Nitrile Gloves Black L, 100 ct',id:'1120259',p:9.11,q:0},
+  {n:'Nitrile Gloves Black M, 100 ct',id:'1120244',p:9.11,q:0},
+  {n:'Nitrile Gloves Black XL, 100 ct',id:'1120258',p:9.11,q:0},
+  {n:'Sunset Wrapped Cutlery Kit 4pc, 250 ct',id:'1140046',p:21.64,q:0},
+  {n:'Choice Clear Cutlery, 360 ct',id:'1140440',p:18.38,q:0},
+  {n:'Sunset Medium Weight White Forks, 1000 ct',id:'80070',p:17.38,q:0},
+  {n:'Poise Dinner Fork, 1 doz',id:'61568',p:6.02,q:0},
+  {n:'Poise Dinner Knife, 1 doz',id:'61569',p:13.48,q:0},
+  {n:'Poise Teaspoon, 1 doz',id:'61571',p:5.42,q:0},
+  {n:'Cohasset Dinner Knife, 1 doz',id:'2130074',p:16.04,q:0},
+  {n:'Cohasset Salad Fork, 1 doz',id:'2130071',p:12.92,q:0},
+  {n:'Cohasset Bouillon Spoon, 1 doz',id:'2130073',p:10.26,q:0},
+  {n:'Steak Knife St. Louis, 1 doz',id:'65395',p:7.28,q:0},
+  {n:'Sunset Film Wrap 24"x2000',id:'1160010',p:37.79,q:0},
+  {n:'Sunset Film Wrap 18"x2000',id:'1160019',p:26.12,q:0},
+  {n:'Norpak Wax Paper 8x10.75 Logan Wrap, 500 ct',id:'2170102',p:5.80,q:0},
+  {n:'Norpak Wax Wrap 15x10.75, 500 ct',id:'2170099',p:10.39,q:0},
+  {n:'Norpak Wax 8x10.75 HD, 500 ct',id:'2170097',p:7.85,q:0},
+  {n:'Norpak 12x10.75 Logan Wrap, 500 ct',id:'2170100',p:8.46,q:0},
+  {n:'Emerald 12x12 Black Checkered Wax, 1000 ct',id:'2170115',p:33.64,q:0},
+  {n:'Handy Wacks 12x12 Red Check Wax, 1000 ct',id:'2170113',p:33.07,q:0},
+  {n:'Sunset 16x24 Bakery Pan Liners, 1000 ct',id:'59659',p:63.42,q:0},
+  {n:'Black Napkin Bands 4.5x1.5, 2000 ct',id:'23819',p:11.49,q:0},
+  {n:'Sunset 8oz Hot Paper Cafe Cups, 50 ct',id:'2070515',p:3.91,q:0},
+  {n:'Sunset 10oz Squat White Hot Cup, 1000 ct',id:'2070942',p:5.69,q:0},
+  {n:'Sunset 8oz White Hot Cups, 1000 ct',id:'2070940',p:4.72,q:0},
+  {n:'Sunset Clear PET Cup 12oz, 50 ct',id:'2071072',p:5.09,q:0},
+  {n:'Sunset Clear PET Cup 16oz, 50 ct',id:'2071073',p:5.44,q:0},
+  {n:'Sunset Clear PET Cup 20oz, 50 ct',id:'2071074',p:7.73,q:0},
+  {n:'Dart Black Cappuccino Dome Lid 10-24oz, 100 ct',id:'2071094',p:7.04,q:0},
+  {n:'Dart White Dome Lid w/sip 12-24oz, 100 ct',id:'31323',p:6.57,q:0},
+  {n:'Dart Lift-N-Lock Lid 8oz Foam, 1000 ct',id:'54074',p:40.30,q:0},
+  {n:'Sunset X-Slot Lid 9-12oz, 100 ct',id:'2071077',p:3.20,q:0},
+  {n:'Sunset Clear X-Slot Lids 10oz, 100 ct',id:'2071078',p:4.27,q:0},
+  {n:'Sunset Clear Slot Lid 16/20/24oz, 100 ct',id:'2071079',p:2.82,q:0},
+  {n:'Sunset Black Lid Ripple/White 10-20oz, 25 ct',id:'2070050',p:4.40,q:0},
+  {n:'Sunset Black Lid Ripple/White 8oz',id:'2070027',p:3.18,q:0},
+  {n:'Sunset 1oz Souffle Cup, 250 ct',id:'760969',p:2.81,q:0},
+  {n:'Sunset Souffle Cup Lids .75-1oz, 125 ct',id:'760974',p:1.57,q:0},
+  {n:'Skyline 4-Cup Pulp Carrier Tray, 300 ct',id:'2070478',p:45.99,q:0},
+  {n:'Circle Beverage Plug Black, 400 ct',id:'1140241',p:15.31,q:0},
+  {n:'Wood Coffee Stirrer 5.5in, 1000 ct',id:'53063',p:4.16,q:0},
+  {n:'Winco Dish Box 7in Black',id:'60601',p:5.31,q:0},
+  {n:'Cambro 1/4 Translucent Seal Cover',id:'2100100',p:5.34,q:0},
+  {n:'Cambro 1/6 Translucent Seal Cover',id:'2100098',p:4.33,q:0},
+  {n:'Edlund Hinged Tongs 12in',id:'60515',p:15.44,q:0},
+  {n:'Thunder 12in Non-Slip Locking Tong',id:'771452',p:8.34,q:0},
+  {n:'Chef Master Griddle Scraper SS',id:'771547',p:14.40,q:0},
+  {n:'Winco Pastry/Basting Brush 1.5in',id:'60630',p:4.75,q:0},
+  {n:'Winco 3 Glass Washing Brushes',id:'1190089',p:19.64,q:0},
+  {n:'CDN Ref/Freezer Thermometer',id:'2150070',p:6.26,q:0},
+  {n:'Domino Granulated Sugar, 50 lb',id:'20869',p:37.07,q:0},
+  {n:'Domino Sugar Bales, 10/4 lb',id:'120012',p:5.40,q:0},
+  {n:'Sugar In The Raw Packets, 1200 ct',id:'15837',p:40.31,q:0},
+  {n:'Purasnow Cake Flour, 50 lb',id:'13689',p:26.93,q:0},
+  {n:'Ardent Hotel & Restaurant Flour, 25 lb',id:'2060032',p:12.03,q:0},
+  {n:'Ardent Hotel & Restaurant Flour, 50 lb',id:'23751',p:25.01,q:0},
+  {n:'General Mills Fine Whole Wheat Flour, 50 lb',id:'13523',p:24.59,q:0},
+  {n:'ConAgra Self Rising Flour, 25 lb',id:'62611',p:12.69,q:0},
+  {n:'Nutella Hazelnut Spread, 2/26.5 oz',id:'20730',p:15.08,q:0},
+  {n:'Del Campo Dulce De Leche, 11 lb',id:'160041',p:29.24,q:0},
+  {n:"Chef's Quality Sweetened Condensed Milk #10",id:'2040016',p:19.81,q:0},
+  {n:'Supremo Italiano Savoiardi Lady Fingers 7oz',id:'1090042',p:3.12,q:0},
+  {n:"Hershey's Chocolate Syrup, 7.5 lb",id:'24670',p:17.25,q:0},
+  {n:'Polaner Apricot Preserves, 4 lb',id:'52252',p:12.54,q:0},
+  {n:'Torani French Vanilla Syrup, 750 ml',id:'39010',p:9.85,q:0},
+  {n:'Torani Vanilla Syrup, 750 ml',id:'55129',p:9.75,q:0},
+  {n:'Torani Caramel Syrup, 750 ml',id:'55134',p:9.65,q:0},
+  {n:'Torani Hazelnut Syrup, 750 ml',id:'55131',p:9.66,q:0},
+  {n:'Torani Caramel Sauce, 4/64 oz',id:'2560223',p:25.80,q:0},
+  {n:'Philadelphia Soft Cream Cheese, 3 lb',id:'29332',p:23.09,q:0},
+  {n:'James Farm Cream Cheese Loaf, 3 lb',id:'62516',p:8.39,q:0},
+  {n:'BelGioioso Mascarpone, 5 lb',id:'57678',p:26.45,q:0},
+  {n:'BelGioioso Mascarpone, 16 oz',id:'50521',p:5.34,q:0},
+  {n:'BelGioioso Grated Parmesan, 5 lb',id:'1440120',p:35.91,q:0},
+  {n:'Grated Parmesan Family Pack, 5x5 lb',id:'1440980',p:19.12,q:0},
+  {n:'BelGioioso Sliced Mozzarella, 1 lb',id:'1440420',p:5.97,q:0},
+  {n:'BelGioioso Mozzarella Thin Sliced, 1 lb',id:'1440779',p:5.59,q:0},
+  {n:'BelGioioso Fresh Mozzarella Log, 1 lb',id:'69002',p:5.48,q:0},
+  {n:'BelGioioso Burrata Balls 16 oz',id:'1440437',p:8.63,q:0},
+  {n:'BelGioioso Burrata Balls 2oz, 1 lb',id:'1440709',p:8.05,q:0},
+  {n:'Supremo Shredded NY Cheese Blend, 5 lb',id:'1440402',p:14.64,q:0},
+  {n:'Supremo Shredded Whole Milk Mozzarella, 5 lb',id:'93003',p:14.08,q:0},
+  {n:'Imported Gruyere Cheese (~6 lb)',id:'50534',p:105.60,q:0},
+  {n:'James Farm Swiss Cheese Sandwich Cut (~7 lb)',id:'40000',p:25.20,q:0},
+  {n:'James Farm Swiss Cheese Hi-Cut (~8 lb)',id:'20012',p:30.96,q:0},
+  {n:'James Farm Large Loose Eggs, 7.5 dz',id:'1520065',p:13.33,q:0},
+  {n:'James Farm Unsalted Solid Butter, 1 lb',id:'380006',p:3.16,q:0},
+  {n:'Cloverdale Unsalted Butter AA, 1 lb',id:'450083',p:2.74,q:0},
+  {n:'Country Crock Whipped Margarine, 5 lb',id:'450109',p:8.03,q:0},
+  {n:'Friendship Plain Yogurt, 5 lb',id:'29211',p:0,q:0},
+  {n:'Ruby Bay Smoked Salmon Trim, 12 oz',id:'80349',p:7.66,q:0},
+  {n:'Hormel Bacon 18/22, 144 slices',id:'82869',p:61.28,q:0},
+  {n:'Farmland Silver Medal Hickory Pit Ham (~15 lb)',id:'20354',p:53.10,q:0},
+  {n:'Farmland Boneless Smoked Ham (~10 lb)',id:'70008',p:34.10,q:0},
+  {n:"Carver's Pride Whole Virginia Ham (~13 lb)",id:'72855',p:42.64,q:0},
+  {n:"Carver's Pride Ham 4x6 (~13 lb)",id:'72965',p:35.49,q:0},
+  {n:'Hatfield Cooked Ham 39% (~11 lb)',id:'77419',p:29.15,q:0},
+  {n:'Olymel Boneless Honey Smoked Ham',id:'82960',p:39.60,q:0},
+  {n:'Hormel Hickory Smoked Turkey Slices, 2 lb',id:'1490014',p:19.00,q:0},
+  {n:'Daniele Sliced Genoa Salami, 16 oz',id:'79072',p:10.81,q:0},
+  {n:"Ken's Creamy Caesar Dressing, gal",id:'17587',p:20.06,q:0},
+  {n:'Tulkoff Fresh Genovese Pesto, 32 oz',id:'65960',p:13.75,q:0},
+  {n:'Grey Poupon Mustard, 48 oz',id:'62569',p:27.41,q:0},
+  {n:"French's Dijon Mustard, 105 oz",id:'2010010',p:32.89,q:0},
+  {n:'Kikkoman Sriracha, 20 oz',id:'2020431',p:4.42,q:0},
+  {n:'RedPack Pizza Sauce w/Basil #10',id:'12607b',p:8.15,q:0},
+  {n:'Supremo Pitted Ripe Black Olives #10',id:'35996',p:10.81,q:0},
+  {n:'Heinz Red Wine Vinegar, gal',id:'19725',p:16.98,q:0},
+  {n:'Regina Red Wine Vinegar, gal',id:'38600',p:12.57,q:0},
+  {n:'Heinz White Vinegar, gal',id:'12607',p:6.09,q:0},
+  {n:"Chef's Quality Smoked Paprika, 18 oz",id:'1070506',p:12.16,q:0},
+  {n:'Frozen Paparepa Taqueno, 20 ct',id:'2410217',p:21.50,q:0},
+  {n:'Frozen Paparepa Mini Taqueno, 50 ct',id:'2410218',p:25.65,q:0},
+  {n:'Paparepa Pre-baked Cheese Pandebono, 20 ct',id:'2410222',p:16.30,q:0},
+  {n:'James Farm IQF Cut Green Beans, 2 lb',id:'970132',p:2.10,q:0},
+  {n:'Fancy Oranges 72/88 ct',id:'42693',p:38.94,q:0},
+  {n:'Oranges 113 ct (juice)',id:'42794',p:43.79,q:0},
+  {n:'Lemons, 5 lb bag',id:'41117',p:9.19,q:0},
+  {n:'Bagged Limes, 5 lb',id:'42534',p:6.40,q:0},
+  {n:'Hass Avocados, 8 ct',id:'41428',p:15.44,q:0},
+  {n:'Driscoll Strawberries, 1 lb',id:'650327',p:4.57,q:0},
+  {n:'Grape Tomatoes, 6/2 lb',id:'40680',p:10.55,q:0},
+  {n:'Beefsteak Tomatoes, 5 lb',id:'40909',p:10.32,q:0},
+  {n:'Peeled Shallots, 5 lb',id:'42741',p:22.64,q:0},
+  {n:'Dry Shallots, 5 lb',id:'42740',p:11.01,q:0},
+  {n:'Arugula, 1.5 lb bag',id:'42837',p:10.23,q:0},
+  {n:'Organic Arugula, 2 lb',id:'650293',p:13.11,q:0},
+  {n:'Organic Spring Mix, 2 lb',id:'650291',p:14.90,q:0},
+  {n:'Maison Perrier Sparkling Water 500ml, 24 ct',id:'1220414',p:27.77,q:0},
+  {n:'San Pellegrino Fruit Rainbow 330ml, 24 ct',id:'1220432',p:26.58,q:0},
+  {n:'Deer Park Water 0.5L, 40 ct',id:'1220182',p:8.39,q:0},
+  {n:'Coca-Cola Zero 12oz, 35 pk',id:'441544',p:22.98,q:0},
+  {n:'Coca-Cola 12oz, 35 pk',id:'441541',p:23.15,q:0},
+  {n:'Coca-Cola Mini 7.5oz, 10 pk',id:'441750',p:21.89,q:0},
+  {n:'Dawn Pot & Pan Detergent, 1 gal',id:'2190086',p:29.10,q:0},
+  {n:'Dawn Pot & Pan Detergent, 5 gal',id:'2190095b',p:97.26,q:0},
+  {n:'Scotch-Brite Griddle Cleaner, 32 oz',id:'2230156',p:18.69,q:0},
+  {n:'Skyline Grease Trap Cleaner, gal',id:'50857',p:10.01,q:0},
+  {n:'Skyline Pink Hand Soap, gal',id:'2270047',p:9.75,q:0},
+  {n:'Nu-Foam Sanitizing Tablets, 100 ct',id:'50866',p:11.23,q:0},
+  {n:'Lysol All Purpose Cleaner Lemon, 32 oz',id:'1310034',p:6.89,q:0},
+  {n:'Alpine Soap/Sanitizer Dispenser White',id:'3190004',p:37.53,q:0},
+  {n:'Coffee Percolator, 100 cup',id:'840146',p:190.16,q:0},
+];
+// Instacart / Publix. Each item can carry an exact product `url` (100% precise —
+// adds the RIGHT item every time). Items without a url fall back to name search.
+// Paste Publix product URLs here (the retailerSlug=publix links) as you gather them.
+const P='https://www.instacart.com/products/', S='?retailerSlug=publix';
+const IC=[
+  {n:'Hass Avocado', url:P+'3251376-hass-avocado-each'+S},
+  {n:'Wholly Guacamole Chunky Bowl, 7.5 OZ', url:P+'20225955-wholly-guacamole-chunky-guacamole-7-5-oz'+S},
+  {n:'Fresh Attitude Arugula, Prewashed', url:P+'242214-fresh-attitude-arugula-5-oz'+S},
+  {n:'GreenWise Organic Spring Mix 16 oz', url:P+'3322351-greenwise-organic-spring-mix-16-oz'+S},
+  {n:'Publix Milk, Whole 1 gal', url:P+'324942-publix-milk-whole-1-ea'+S},
+  {n:'Publix Milk, Reduced Fat, 2% Milkfat 1 gal', url:P+'18066278-publix-milk-reduced-fat-2-milkfat-1-ea'+S},
+  {n:'Chobani Extra Creamy Oatmilk 52 fl oz', url:P+'20941373-chobani-oat-plain-extra-creamy-52-fl-oz'+S},
+  {n:'Almond Breeze Unsweetened Original Almondmilk 96 fl oz', url:P+'1377249-almond-breeze-unsweetened-original-almondmilk-96-fl-oz'+S},
+  {n:'Shallot 1 each', url:P+'3253951-shallot-each'+S},
+  {n:'Strawberries 1 each', url:P+'25856362-strawberries-package'+S},
+  {n:'evian Natural Spring Water 11.2 fl oz', url:P+'16480048-evian-natural-spring-water-330-ml'+S},
+  {n:'BelGioioso Fresh Mozzarella Cheese Sliced 8 oz', url:P+'96152-belgioioso-fresh-mozzarella-cheese-sliced-8-oz'+S},
+  {n:'Sargento Gouda Sliced Cheese, 10 slices 7 oz', url:P+'77159-sargento-sliced-gouda-natural-cheese-7-oz'+S},
+  {n:'Artesano Brioche Bakery Bread, 20 oz'},
+].map(x=>({n:x.n, url:x.url||'', q:0}));
+const money=n=>'$'+n.toFixed(2);
+// RD & Publix start at ZERO (staff enter what they need). Costco keeps its
+// typical-order defaults from the list above — staff adjust as needed.
+RD.forEach(it=>it.q=0); IC.forEach(it=>it.q=0);
+// One source of truth: the arrays. The stepper +/- and the number box both write
+// straight into the array, and Send reads from the array — so what you see is what
+// gets ordered, on all three suppliers.
+const ARR={costco:COSTCO, rd:RD, ic:IC};
+function stepper(a,i,q){
+  return `<div class="stepper">
+    <button type="button" onclick="bump('${a}',${i},-1)">−</button>
+    <input type="number" min="0" value="${q}" oninput="setQ('${a}',${i},this.value)">
+    <button type="button" onclick="bump('${a}',${i},1)">+</button>
+  </div>`;
+}
+function setQ(a,i,v){ ARR[a][i].q=Math.max(0,parseInt(v||'0',10)||0); recalcFor(a); }
+function bump(a,i,d){ ARR[a][i].q=Math.max(0,(ARR[a][i].q||0)+d); renderFor(a); }
+function renderFor(a){ a==='costco'?renderCostco():a==='rd'?renderRD():renderIC(); }
+function recalcFor(a){ if(a==='costco')calc(); else if(a==='rd')calcRD(); }
+function render(){ renderCostco(); renderRD(); renderIC(); }
+function renderCostco(){
+  document.getElementById('costco-rows').innerHTML=COSTCO.map((it,i)=>`<tr>
+    <td class="itemname">${it.n}${it.id?'':' <span class="muted" title="No Costco item # — submits to owner, add manually">• manual</span>'}</td>
+    <td class="muted">${it.id||'—'}</td>
+    <td class="right muted">${it.p?money(it.p):'—'}</td>
+    <td class="right">${stepper('costco',i,it.q)}</td>
+  </tr>`).join('');
+  calc();
+}
+function calc(){
+  const tot=COSTCO.reduce((s,it)=>s+it.p*(it.q||0),0);
+  document.getElementById('costco-total').textContent='Est. total '+money(tot)+(tot<250?' · below $250 (surcharge applies)':' ✓');
+}
+function lines(){ return COSTCO.filter(it=>it.q>0); }
+function copyOrder(){
+  const txt='COSTCO ORDER\n'+lines().map(l=>`${l.q} × ${l.n}${l.id?' (item '+l.id+')':' (no item #)'}`).join('\n');
+  const out=document.getElementById('out'); out.style.display='block'; out.textContent=txt;
+  navigator.clipboard.writeText(txt).catch(()=>{});
+}
+function openAll(){ lines().slice(0,8).forEach(l=>window.open('https://www.costcobusinessdelivery.com/s?keyword='+l.id,'_blank')); }
+// Send the Costco order to the Chrome extension (which fills the cart on Costco).
+let EXT=false;
+window.addEventListener('colette-ext-ready',()=>{EXT=true; const s=document.getElementById('costco-status'); if(s)s.innerHTML='✓ Extension detected. Set quantities → <b>Send to Costco</b> → <b>Open Costco order page</b> → click the gold “Fill Costco cart” button.';});
+function sendCostco(){
+  const ls=lines(); const s=document.getElementById('costco-status');
+  if(!ls.length){ if(s)s.textContent='Set some quantities first.'; return; }
+  if(!EXT){ if(s)s.innerHTML='⚠ Extension not detected. Install the “Colette Supplier Order Filler” extension first (then reload this page). For now, use “Copy list”.'; return; }
+  const auto=ls.filter(l=>l.id); const manual=ls.length-auto.length;
+  window.dispatchEvent(new CustomEvent('colette-send',{detail:{supplier:'costco',lines:auto.map(l=>({id:l.id,qty:l.q,name:l.n}))}}));
+  if(s)s.innerHTML='Sent '+auto.length+' items ✓ — now <b>Open Costco order page</b> and click the gold “Fill Costco cart” button.'+(manual?('<br><span class="muted">'+manual+' item(s) have no Costco item # — add those manually (they’re in “Copy list”).</span>'):'');
+}
+// RD exact product links: SKU → Instacart product id (harvested from RD "Buy It Again").
+// The full product URL is RDBASE + id (slug is optional — the id alone resolves).
+const RDBASE='https://member.restaurantdepot.com/store/jetro-restaurant-depot/products/';
+const RDID={12607:2641365,13523:19191449,13689:51268588,15837:3215362,17587:19432379,19725:19120621,20012:71197533,20354:70531260,20730:192120,20869:1854970,23167:22076292,23265:39238748,23751:21350944,23819:19434012,24670:213858,29211:19441029,29332:17314404,30012:3223123,30013:3342013,31323:2705384,32292:51264557,35996:19306044,38600:16971680,39010:1969525,40000:19437591,40680:69871335,40909:18604140,41117:17616125,41428:3251376,42534:16767877,42693:3255401,42740:19438286,42741:19443159,42794:21207339,42837:19435140,50521:19827311,50534:70532076,50857:19434112,50866:19187498,51017:51267648,52252:19189511,53063:28148600,53790:29817786,54074:19187555,55129:1964180,55131:2810349,55134:19269011,57678:3255289,59659:19188409,60515:19187658,60601:39243368,60630:19432996,61568:19188200,61569:19188174,61571:19189885,62516:19191295,62569:17445990,62611:51267477,65395:19190753,65960:19187518,69002:303810,70008:71197258,72855:70533492,72965:71198736,75168:25408904,75169:25409054,77419:71197424,79072:19191073,80070:19189162,80349:21842764,82869:19469904,82960:71302072,93003:19187937,120012:3072734,160041:51265668,380006:19188368,441541:2736842,441544:2736840,441750:3222144,450083:19432311,450109:2596189,650291:19189594,650293:49583574,650327:17090438,760131:20133641,760443:19190096,760492:29822155,760969:19448380,760974:19451758,761585:51265954,761631:17336525,761632:17336611,761634:51266188,761635:18174072,761747:43474963,761748:34309667,761752:34309489,761753:40464862,761756:34368440,761757:43051983,771452:51269248,771547:19190510,840146:73584842,970132:19187397,1070506:19187871,1090042:19190224,1120244:64709612,1120258:21307613,1120259:21307592,1140046:19191927,1140241:19187076,1140440:25855843,1160010:19190114,1160019:19188518,1180015:51269184,1180133:51269323,1190089:19563195,1220182:3093233,1220414:42891365,1220432:32676247,1310034:21736300,1440120:2657862,1440402:19189303,1440420:572452,1440437:196981,1440709:19191649,1440779:18653988,1440980:29491218,1490014:19434023,1520065:19981072,2010010:18038163,2020431:30847659,2040016:19437833,2060032:19913658,2070027:21214890,2070050:21214915,2070478:22024112,2070515:24472234,2070940:19189183,2070942:19188086,2071072:19188587,2071073:19190395,2071074:19188787,2071077:19188392,2071078:19189982,2071079:19191258,2071094:3261527,2100098:19191108,2100100:3261652,2130071:51265240,2130073:51269826,2130074:51268493,2150070:19510742,2170097:30787034,2170099:19191092,2170100:19189263,2170102:19190037,2170113:28145164,2170115:44252075,2190086:22027833,2230156:1937872,2270047:19432669,2280059:51264385,2320055:156494,2410217:51266219,2410218:51265062,2410222:51270123,2560223:20029986,2570037:51269294,3090024:51269089,3190004:51263949,3290084:51264368};
+const rdUrl=it=>RDID[it.id]?RDBASE+RDID[it.id]:(it.url||'');
+function renderRD(){
+  document.getElementById('rd-rows').innerHTML=RD.map((it,i)=>`<tr>
+    <td class="itemname">${it.n} ${rdUrl(it)?'<span title="Exact product link — adds the right item" style="color:#2e7d32">✓ link</span>':'<span title="No exact link" class="muted">—</span>'}</td>
+    <td class="muted">${it.id}</td>
+    <td class="right muted">${money(it.p)}</td>
+    <td class="right">${stepper('rd',i,it.q)}</td>
+  </tr>`).join('');
+  calcRD();
+}
+function calcRD(){
+  const tot=RD.reduce((s,it)=>s+it.p*(it.q||0),0);
+  document.getElementById('rd-total').textContent='Est. total '+money(tot);
+}
+function copyRD(){
+  const ls=RD.filter(it=>it.q>0);
+  const txt='RESTAURANT DEPOT ORDER\n'+ls.map(x=>`${x.q} × ${x.n} (SKU ${x.id})`).join('\n');
+  const out=document.getElementById('rd-out'); out.style.display='block'; out.textContent=txt; navigator.clipboard.writeText(txt).catch(()=>{});
+}
+function sendRD(){
+  const ls=RD.filter(it=>it.q>0).map(it=>({name:it.n, qty:it.q, url:rdUrl(it)}));
+  const s=document.getElementById('rd-out'); s.style.display='block';
+  if(!ls.length){s.textContent='Set some quantities first.';return;}
+  if(!EXT){s.textContent='⚠ Install the Colette extension first (then reload). For now use “Copy list”.';return;}
+  window.dispatchEvent(new CustomEvent('colette-send',{detail:{supplier:'rd',lines:ls}}));
+  s.textContent='Sent '+ls.length+' items ✓ — Open RD store → click the gold “Fill Restaurant Depot cart” button.';
+}
+function sendIC(){
+  const ls=IC.filter(it=>it.q>0).map(it=>({name:it.n, qty:it.q, url:it.url||''}));
+  const s=document.getElementById('ic-out'); s.style.display='block';
+  if(!ls.length){s.textContent='Set some quantities first.';return;}
+  if(!EXT){s.textContent='⚠ Install the Colette extension first (then reload). For now use “Copy list”.';return;}
+  window.dispatchEvent(new CustomEvent('colette-send',{detail:{supplier:'instacart',lines:ls}}));
+  s.textContent='Sent '+ls.length+' items ✓ — Open Publix on Instacart → click the gold “Fill Publix cart” button.';
+}
+function renderIC(){
+  document.getElementById('ic-rows').innerHTML=IC.map((it,i)=>`<tr>
+    <td class="itemname">${it.n} ${it.url?'<span title="Exact product link — adds the right item" style="color:#2e7d32">✓ link</span>':'<span title="No exact link yet — falls back to search" class="muted">search</span>'}</td>
+    <td class="right">${stepper('ic',i,it.q)}</td>
+  </tr>`).join('');
+}
+function copyIC(){
+  const ls=IC.filter(it=>it.q>0);
+  const txt='PUBLIX / INSTACART ORDER\n'+ls.map(x=>`${x.q} × ${x.n}`).join('\n');
+  const out=document.getElementById('ic-out'); out.style.display='block'; out.textContent=txt; navigator.clipboard.writeText(txt).catch(()=>{});
+}
+
+// ---- Employee submit → notify Edgar ----
+// Gather non-zero quantities keyed by a stable id: Costco item#, RD SKU, Publix index.
+function gatherOrders(){
+  const c={},r={},i={};
+  COSTCO.forEach((it,idx)=>{ if(it.q>0) c[idx]=it.q; }); // by index — some items have no item #
+  RD.forEach(it=>{ if(it.q>0) r[it.id]=it.q; });
+  IC.forEach((it,idx)=>{ if(it.q>0) i[idx]=it.q; });
+  return {c,r,i};
+}
+async function submitOrder(){
+  const s=document.getElementById('submit-status');
+  const pin=(document.getElementById('emp-pin').value||'').trim();
+  const {c,r,i}=gatherOrders();
+  const total=Object.keys(c).length+Object.keys(r).length+Object.keys(i).length;
+  if(!total){ s.style.color='#a33'; s.textContent='Set some quantities first.'; return; }
+  if(!pin){ s.style.color='#a33'; s.textContent='Enter your PIN.'; return; }
+  s.style.color='#666'; s.textContent='Submitting…';
+  try{
+    const resp=await fetch(BACKEND+'/api/ops?action=submit-order',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pin,c,r,i})});
+    const d=await resp.json().catch(()=>({}));
+    if(!resp.ok||!d.ok){ s.style.color='#a33'; s.textContent=d.error==='Invalid PIN'?'PIN not recognized — check with Edgar.':('Could not submit: '+(d.error||resp.status)); return; }
+    s.style.color='#2e7d32'; s.textContent=`✓ Order sent to the Colette AI Assistant (from ${d.employee}). It’ll be placed shortly.`;
+    document.getElementById('emp-pin').value='';
+  }catch(e){ s.style.color='#a33'; s.textContent='Network error — try again.'; }
+}
+
+// ---- Owner mode: pre-fill quantities from a submitted order link (?load=) ----
+function decodeLoad(){
+  const p=new URLSearchParams(location.search).get('load');
+  if(!p) return null;
+  try{ const j=p.replace(/-/g,'+').replace(/_/g,'/'); return JSON.parse(decodeURIComponent(escape(atob(j)))); }catch(e){ try{ return JSON.parse(atob(p)); }catch(_){ return null; } }
+}
+function applyLoad(pl){
+  if(!pl) return false;
+  const byId=(arr,map)=>{ Object.entries(map||{}).forEach(([id,q])=>{ const it=arr.find(x=>String(x.id)===String(id)); if(it) it.q=+q||0; }); };
+  Object.entries(pl.c||{}).forEach(([idx,q])=>{ if(COSTCO[idx]) COSTCO[idx].q=+q||0; }); // Costco keyed by index
+  byId(RD,pl.r);
+  Object.entries(pl.i||{}).forEach(([idx,q])=>{ if(IC[idx]) IC[idx].q=+q||0; });
+  const when=pl.t?new Date(pl.t).toLocaleString('en-US',{timeZone:'America/New_York'}):'';
+  const b=document.getElementById('load-banner');
+  b.style.display='block';
+  b.innerHTML=`📥 <b>Order from ${pl.e||'staff'}</b>${when?' · '+when+' ET':''} — quantities are pre-filled below. Use <b>Send to…</b> on each supplier, then the gold <b>Fill</b> button, to place it.`;
+  document.body.classList.add('owner-mode'); // reveal Send/Open/Fill controls
+  return true;
+}
+
+// Admin (owner) mode: load the orders employees submitted, pre-fill, and show
+// only the Send/Open controls (no AI-submit). Triggered by ?owner=1.
+function applyPendingOrder(o){
+  COSTCO.forEach(x=>x.q=0); RD.forEach(x=>x.q=0); IC.forEach(x=>x.q=0);
+  const m=(o&&o.orders)||{};
+  Object.entries(m.c||{}).forEach(([id,q])=>{const it=COSTCO.find(x=>String(x.id)===String(id)); if(it) it.q=+q||0;});
+  Object.entries(m.r||{}).forEach(([id,q])=>{const it=RD.find(x=>String(x.id)===String(id)); if(it) it.q=+q||0;});
+  Object.entries(m.i||{}).forEach(([idx,q])=>{ if(IC[idx]) IC[idx].q=+q||0; });
+  render();
+}
+function selPending(){ const i=+document.getElementById('pend-sel').value; applyPendingOrder((window.__PEND||[])[i]); }
+async function markPlacedCurrent(){
+  const sel=document.getElementById('pend-sel'); const i=sel?+sel.value:0; const o=(window.__PEND||[])[i];
+  if(!o||!o.id) return;
+  const key=(function(){try{return localStorage.getItem('colette_admin_key')||'';}catch(e){return '';}})();
+  try{ await fetch(BACKEND+'/api/ops?action=resolve-order',{method:'POST',headers:{'Content-Type':'application/json','x-colette-secret':key},body:JSON.stringify({id:o.id})}); }catch(e){}
+  ownerAuto();
+}
+async function ownerAuto(){
+  document.body.classList.add('owner-mode');
+  const key=(function(){try{return localStorage.getItem('colette_admin_key')||'';}catch(e){return '';}})();
+  const b=document.getElementById('load-banner'); b.style.display='block'; b.textContent='Loading submitted orders…';
+  try{
+    const r=await fetch(BACKEND+'/api/ops?action=pending-orders&t='+Date.now(),{headers:{'x-colette-secret':key}});
+    const d=await r.json().catch(()=>({}));
+    const orders=(d&&d.orders)||[];
+    window.__PEND=orders;
+    if(!orders.length){ b.innerHTML='No submitted orders waiting. You can still place an order manually below.'; return; }
+    const opts=orders.map((o,i)=>`<option value="${i}">${o.employee} · ${new Date(o.at).toLocaleString('en-US',{timeZone:'America/New_York',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})} · ${o.totalItems} items</option>`).join('');
+    b.innerHTML='📥 <b>Order submitted by staff</b> — review below, then Send to each supplier. '
+      +'<select id="pend-sel" onchange="selPending()" style="margin:6px 8px;padding:6px;border:1px solid var(--line);border-radius:8px">'+opts+'</select>'
+      +'<button onclick="markPlacedCurrent()" style="background:none;border:1px solid var(--line);border-radius:16px;padding:6px 12px;cursor:pointer">✓ Mark placed</button>';
+    applyPendingOrder(orders[0]);
+  }catch(e){ b.innerHTML='Could not load submitted orders — make sure you signed in as admin.'; }
+}
+
+const _pl=decodeLoad();
+if(_pl) applyLoad(_pl);
+const _ownerParam=new URLSearchParams(location.search).get('owner')==='1';
+// When embedded in the Colette Ops shell, the employee's PIN is passed in so
+// they don't retype it (the field stays editable).
+(function prefillPin(){ try{ const p=new URLSearchParams(location.search).get('pin'); if(p){ const el=document.getElementById('emp-pin'); if(el) el.value=p; document.body.classList.add('pinned'); /* already signed in → hide PIN field, slim the bar */ } }catch(e){} })();
+render();
+if(_ownerParam && !_pl) ownerAuto();
+</script>
+</body>
+</html>
