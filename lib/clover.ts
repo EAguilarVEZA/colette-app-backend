@@ -1135,3 +1135,43 @@ export async function clockStatus(pin: string): Promise<{ name: string | null; c
   const clockedIn = !!(last && last.type === 'in');
   return { name, clockedIn, since: clockedIn ? last!.at : null };
 }
+
+// ================== Schedule shifts + time-off → Redis ==================
+const SHIFTS_KEY = 'colette:shifts';
+const TIMEOFF_KEY = 'colette:timeoff';
+
+// Shifts are a flat object keyed by "Name|YYYY-MM-DD" -> { start, end }.
+export async function getShifts(): Promise<Record<string, { start: string; end: string }>> {
+  const r = await kvREST(['GET', SHIFTS_KEY]);
+  if (r.ok) { try { return r.result ? JSON.parse(r.result) : {}; } catch { return {}; } }
+  const c = await redisTCP(); if (c) { try { const v = await c.get(SHIFTS_KEY); return v ? JSON.parse(v) : {}; } catch { return {}; } }
+  return {};
+}
+export async function saveShifts(shifts: Record<string, any>): Promise<void> {
+  const s = JSON.stringify(shifts || {});
+  const r = await kvREST(['SET', SHIFTS_KEY, s]);
+  if (r.ok) return;
+  const c = await redisTCP(); if (c) { try { await c.set(SHIFTS_KEY, s); } catch { /* best effort */ } }
+}
+
+export interface TimeOff { id: string; name: string; pin: string; from: string; to: string; reason?: string; status: 'pending' | 'approved' | 'denied'; at: number }
+export async function listTimeOff(): Promise<TimeOff[]> {
+  const r = await kvREST(['LRANGE', TIMEOFF_KEY, 0, 200]);
+  let arr: any = null;
+  if (r.ok) arr = r.result;
+  else { const c = await redisTCP(); if (c) { try { arr = await c.lrange(TIMEOFF_KEY, 0, 200); } catch { arr = null; } } }
+  if (!Array.isArray(arr)) return [];
+  return arr.map((s: string) => { try { return JSON.parse(s); } catch { return null; } }).filter(Boolean);
+}
+export async function addTimeOff(t: TimeOff): Promise<void> {
+  const s = JSON.stringify(t);
+  const r = await kvREST(['LPUSH', TIMEOFF_KEY, s]); if (r.ok) { await kvREST(['LTRIM', TIMEOFF_KEY, 0, 300]); return; }
+  const c = await redisTCP(); if (c) { try { await c.lpush(TIMEOFF_KEY, s); await c.ltrim(TIMEOFF_KEY, 0, 300); } catch { /* best effort */ } }
+}
+export async function resolveTimeOff(id: string, status: 'approved' | 'denied'): Promise<void> {
+  const all = await listTimeOff();
+  const next = all.map((t) => t.id === id ? { ...t, status } : t);
+  const r = await kvREST(['DEL', TIMEOFF_KEY]);
+  if (r.ok) { for (let k = next.length - 1; k >= 0; k--) await kvREST(['LPUSH', TIMEOFF_KEY, JSON.stringify(next[k])]); return; }
+  const c = await redisTCP(); if (c) { try { await c.del(TIMEOFF_KEY); for (let k = next.length - 1; k >= 0; k--) await c.lpush(TIMEOFF_KEY, JSON.stringify(next[k])); } catch { /* best effort */ } }
+}
