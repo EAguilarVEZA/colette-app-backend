@@ -114,6 +114,9 @@ const run = async () => {
         let code = (tds[0].innerText || '').trim();
         if (!/^\d{3,7}$/.test(code)) { code = null; for (const td of tds) { const t = (td.innerText || '').trim(); if (/^\d{3,7}$/.test(t)) { code = t; break; } } }
         if (!code) return;
+        // product name = the description cell (first text cell with letters that isn't the code)
+        let name = '';
+        for (const td of tds) { const t = (td.innerText || '').trim(); if (t && t !== code && /[A-Za-z]{2,}/.test(t) && !/^\$/.test(t)) { name = t.replace(/\s+/g, ' '); break; } }
         // qty = any input in the row with a numeric value (property OR attribute),
         // else a small integer text cell that isn't the code.
         let qty = 0;
@@ -122,7 +125,7 @@ const run = async () => {
           if (v && parseFloat(v) > 0) { qty = parseFloat(v); break; }
         }
         if (!qty) { for (const td of tds) { const t = (td.innerText || '').trim(); if (t !== code && /^\d{1,3}$/.test(t) && +t > 0) { qty = +t; break; } } }
-        if (qty > 0) out.push({ code, qty });
+        if (qty > 0) out.push({ code, name, qty });
         if (dbg.length < 4) dbg.push(((tr.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 120)) + ' [inputs:' + tr.querySelectorAll('input').length + ']');
       });
       return { out, dbg };
@@ -158,12 +161,12 @@ const run = async () => {
         const out = parsed.out;
         const iso = toISO(o.deliveryDate);
         byDate[iso] = byDate[iso] || {};
-        for (const li of out) byDate[iso][li.code] = (byDate[iso][li.code] || 0) + li.qty;
+        for (const li of out) { const e = byDate[iso][li.code] || { name: li.name || '', qty: 0 }; e.qty += li.qty; if (!e.name && li.name) e.name = li.name; byDate[iso][li.code] = e; }
         log(`  Order ${o.orderNo} (${iso}): ${out.length} line(s).` + (out.length === 0 ? ' SAMPLE ROWS: ' + JSON.stringify(parsed.dbg) : ''));
       } catch (e) { log(`  Order ${o.orderNo}: read failed —`, String(e).slice(0, 120)); }
     }
     for (const [iso, agg] of Object.entries(byDate)) {
-      const lns = Object.entries(agg).map(([code, qty]) => ({ code, qty }));
+      const lns = Object.entries(agg).map(([code, e]) => ({ code, name: e.name || '', qty: e.qty }));
       try {
         await fetch(`${BACKEND}/api/ops?action=alon-order-save`, {
           method: 'POST', headers: { 'Content-Type': 'application/json', 'x-colette-secret': SECRET },
@@ -175,7 +178,7 @@ const run = async () => {
 
     // Today's delivery lines drive the Clover inventory sync.
     const isoDate = toISO(targetDate);
-    const todayLines = Object.entries(byDate[isoDate] || {}).map(([code, qty]) => ({ code, qty }));
+    const todayLines = Object.entries(byDate[isoDate] || {}).map(([code, e]) => ({ code, qty: e.qty }));
     log('Today delivery', isoDate, '→', JSON.stringify(todayLines));
 
     // Fresh-day policy: zero EVERYTHING first, then load ONLY today's delivery.
