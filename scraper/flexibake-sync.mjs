@@ -384,7 +384,70 @@ const warm = async () => {
   log('Cache warm complete.');
 };
 
-const main = process.env.TASK === 'reset' ? resetZero
+// Harvest the FULL Alon product catalog (every item's code, description, price)
+// from the order form, so the dashboard can offer the entire list to build a new
+// order. Opens an existing order in EDIT mode (shows all products) and reads it —
+// nothing is submitted. Trigger with "Run workflow" → task=catalog.
+const harvestCatalog = async () => {
+  const browser = await chromium.launch();
+  const page = await browser.newPage();
+  try {
+    await page.goto(`${BASE}/FBWSLogon.aspx`, { waitUntil: 'networkidle' });
+    await page.locator('input:not([type="password"]):not([type="hidden"]):not([type="submit"]):not([type="button"])').first().fill(USER);
+    await page.locator('input[type="password"]').first().fill(PASS);
+    await Promise.all([
+      page.waitForLoadState('networkidle').catch(() => {}),
+      page.locator('[id$="PB_EXIST_LOGON"]').first().click({ timeout: 15000 })
+        .catch(async () => { await page.getByRole('link', { name: 'Login', exact: true }).first().click(); }),
+    ]);
+    await page.waitForLoadState('domcontentloaded').catch(() => {});
+    await page.waitForTimeout(1500);
+    log('Logged in as', USER, '· harvesting full catalog');
+
+    // Open the delivery-date list and EDIT the first order to reach the full form.
+    await page.goto(`${BASE}/FBWSDeliveryDate.aspx`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.waitForTimeout(1200);
+    await page.evaluate(() => {
+      for (const tr of document.querySelectorAll('tr')) {
+        const link = tr.querySelector('a[href*="__doPostBack"]');
+        if (link) { const mm = link.getAttribute('href').match(/__doPostBack\('([^']+)'/); if (mm) { __doPostBack(mm[1], ''); return; } }
+      }
+    });
+    await page.waitForURL('**/FBWSOpenOrder.aspx', { timeout: 20000 }).catch(() => {});
+    await page.waitForLoadState('domcontentloaded').catch(() => {});
+    await page.waitForFunction(() => [...document.querySelectorAll('td')].some((td) => /^\d{3,7}$/.test((td.innerText || '').trim())), { timeout: 20000 }).catch(() => {});
+    await page.waitForTimeout(1500);
+
+    const cat = await page.evaluate(() => {
+      const out = []; const dbg = [];
+      document.querySelectorAll('tr').forEach((tr) => {
+        const tds = tr.querySelectorAll('td'); if (tds.length < 3) return;
+        let code = (tds[0].innerText || '').trim();
+        if (!/^\d{3,7}$/.test(code)) { code = null; for (const td of tds) { const t = (td.innerText || '').trim(); if (/^\d{3,7}$/.test(t)) { code = t; break; } } }
+        if (!code) return;
+        let name = ''; for (const td of tds) { const t = (td.innerText || '').trim(); if (t && t !== code && /[A-Za-z]{2,}/.test(t) && !/^\$/.test(t)) { name = t.replace(/\s+/g, ' '); break; } }
+        let price = 0; for (const td of tds) { const m = (td.innerText || '').trim().match(/\$?\s*(\d+\.\d{2})\b/); if (m) { price = parseFloat(m[1]); break; } }
+        out.push({ code, name, price });
+        if (dbg.length < 6) dbg.push((tr.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 140));
+      });
+      return { out, dbg };
+    });
+    log(`Catalog rows read: ${cat.out.length}. sample:`, JSON.stringify(cat.dbg));
+    if (cat.out.length) {
+      const r = await fetch(`${BACKEND}/api/ops?action=alon-catalog-save`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-colette-secret': SECRET },
+        body: JSON.stringify({ lines: cat.out, replace: true }),
+      });
+      const j = await r.json().catch(() => ({}));
+      log(`Saved full Alon catalog: ${j.count || cat.out.length} products.`);
+    } else {
+      log('No catalog rows found — order form layout may differ (see sample above).');
+    }
+  } finally { await browser.close(); }
+};
+
+const main = process.env.TASK === 'catalog' ? harvestCatalog
+  : process.env.TASK === 'reset' ? resetZero
   : process.env.TASK === 'setcosts' ? setCosts
   : process.env.TASK === 'place' ? placeOrder
   : process.env.TASK === 'warm' ? warm
