@@ -142,6 +142,17 @@ const run = async () => {
     const lines = Object.entries(agg).map(([code, qty]) => ({ code, qty }));
     log('Aggregated lines:', JSON.stringify(lines));
 
+    // Save the REAL Alon order for this delivery date so the dashboard calendar
+    // shows exactly what's in FlexiBake (source='alon'). Date as ISO YYYY-MM-DD.
+    const isoDate = (() => { const [m, d, y] = targetDate.split('/'); return y && m && d ? `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}` : targetDate; })();
+    try {
+      await fetch(`${BACKEND}/api/ops?action=alon-order-save`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-colette-secret': SECRET },
+        body: JSON.stringify({ date: isoDate, lines, source: 'alon' }),
+      });
+      log('Saved Alon order for', isoDate, '→ dashboard calendar.');
+    } catch (e) { log('Could not save Alon order snapshot:', String(e)); }
+
     // Fresh-day policy: zero EVERYTHING first, then load ONLY today's delivery.
     // Done here (after reading Alon so a login failure never wipes stock) — the
     // window where stock is 0 is just the moment between reset and receive.
