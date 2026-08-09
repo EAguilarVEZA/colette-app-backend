@@ -9,7 +9,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
   applyCors, assertConfigured, fail,
   suggestReorder, suggestReorderSmart, getAllCustomers, receiveStock, resetStockZero, salesSummary, setItemCosts, setItemPrices, stockoutAnalysis, getRecentOrders, notifyCustomer,
-  employeeForPin, buildOrderLink, savePendingOrder, listPendingOrders, resolvePendingOrder, notifyOwner,
+  employeeForPin, employeeForPinAsync, getTeam, saveTeam, buildOrderLink, savePendingOrder, listPendingOrders, resolvePendingOrder, notifyOwner,
 } from '../lib/clover.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -129,7 +129,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         // A store employee submits a supplier order for the owner to place.
         // PIN-gated (not the admin secret) so staff can use it without the key.
         if (req.method !== 'POST') return fail(res, 405, 'Use POST');
-        const employee = employeeForPin(String(body?.pin || ''));
+        const employee = await employeeForPinAsync(String(body?.pin || ''));
         if (!employee) return fail(res, 401, 'Invalid PIN');
         const c = (body?.c && typeof body.c === 'object') ? body.c : {};
         const r = (body?.r && typeof body.r === 'object') ? body.r : {};
@@ -160,7 +160,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (req.method !== 'POST') return fail(res, 405, 'Use POST');
         const pin = String(body?.pin || '').trim();
         if (pin) {
-          const employee = employeeForPin(pin);
+          const employee = await employeeForPinAsync(pin);
           if (!employee) return fail(res, 401, 'PIN not recognized');
           return res.status(200).json({ ok: true, role: 'employee', name: employee });
         }
@@ -175,6 +175,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
         if (authed) return res.status(200).json({ ok: true, role: 'admin', name: 'Admin', key: process.env.SYNC_SECRET || '' });
         return fail(res, 401, 'Enter your PIN, or admin ID + password');
+      }
+      case 'team-list': {
+        if (req.method !== 'GET') return fail(res, 405, 'Use GET');
+        if (!requireAuth()) return;
+        return res.status(200).json({ ok: true, team: await getTeam() });
+      }
+      case 'team-save': {
+        if (req.method !== 'POST') return fail(res, 405, 'Use POST');
+        if (!requireAuth()) return;
+        const team = Array.isArray(body?.team) ? body.team : null;
+        if (!team) return fail(res, 400, 'team[] required');
+        // Normalize + validate: keep name, phone, pin, rate.
+        const clean = team
+          .map((m: any) => ({
+            name: String(m?.name || '').trim(),
+            phone: String(m?.phone || '').trim(),
+            pin: String(m?.pin || '').trim(),
+            rate: Number(m?.rate) || 0,
+          }))
+          .filter((m: any) => m.name && /^\d{3,8}$/.test(m.pin));
+        await saveTeam(clean);
+        return res.status(200).json({ ok: true, team: clean });
       }
       case 'pending-orders': {
         if (req.method !== 'GET') return fail(res, 405, 'Use GET');
