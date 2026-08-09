@@ -90,68 +90,64 @@ const run = async () => {
     const targetDate = (process.env.SYNC_DATE || '').trim() || todayET;
     await openOrders();
 
-    // Collect orders whose DELIVERY date == targetDate
+    // Collect ALL orders in the list with their delivery dates (advance orders too).
+    const toISO = (md) => { const [m, d, y] = String(md).split('/'); return (y && m && d) ? `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}` : String(md); };
     const rows = await page.locator('tr', { has: page.getByText('View', { exact: true }) }).all();
-    const todays = [];
+    const allOrders = [];
     for (const r of rows) {
       const cells = await r.locator('td').allInnerTexts();
       const orderNo = (cells[0] || '').trim();
       const deliveryDate = (cells[2] || '').trim();
-      if (orderNo && deliveryDate === targetDate) todays.push(orderNo);
+      if (orderNo && deliveryDate) allOrders.push({ orderNo, deliveryDate });
     }
-    log(`Delivery ${targetDate}: ${todays.length} order(s) →`, todays.join(', ') || 'none');
-    if (!todays.length) {
-      // Fresh-day policy: start every day at zero. No delivery today → leave everything at 0.
-      log('No delivery for that date — zeroing all inventory for a clean start.');
-      await resetZero();
-      await browser.close();
-      return;
-    }
+    log(`Found ${allOrders.length} order(s):`, allOrders.map((o) => `${o.orderNo}@${o.deliveryDate}`).join(', ') || 'none');
 
-    // 3) Open each order and read line items
-    const agg = {}; // code -> qty
-    for (const orderNo of todays) {
+    // Reads one open order table (works for editable inputs and read-only text).
+    const parseOrder = () => page.evaluate(() => {
+      const out = [];
+      document.querySelectorAll('tr').forEach((tr) => {
+        const tds = tr.querySelectorAll('td');
+        if (tds.length < 3) return;
+        const code = (tds[0].innerText || '').trim();
+        if (!/^\d+$/.test(code)) return;
+        let qty = 0;
+        const inp = tr.querySelector('input');
+        if (inp && /\d/.test(inp.value || '')) qty = parseFloat(String(inp.value).replace(/[^0-9.]/g, ''));
+        if (!qty) { for (let i = 1; i < tds.length; i++) { const t = (tds[i].innerText || '').trim(); if (/^\d+$/.test(t)) { qty = parseInt(t, 10); break; } } }
+        if (qty > 0) out.push({ code, qty });
+      });
+      return out;
+    });
+
+    // 3) Read EACH order and save it to the per-date Alon store, so the dashboard
+    // calendar shows the REAL order Alon has for any date — including advance orders.
+    const byDate = {}; // iso -> { code: qty }
+    for (const o of allOrders) {
       await openOrders();
-      const rowLoc = page.locator('tr', { hasText: orderNo }).first();
+      const rowLoc = page.locator('tr', { hasText: o.orderNo }).first();
       await Promise.all([ page.waitForLoadState('domcontentloaded').catch(() => {}), rowLoc.getByText('View', { exact: true }).click() ]);
       await page.waitForTimeout(1500);
-      // Read the whole order table in ONE browser call. Handles both editable
-      // (open order: qty in an <input>) and read-only (placed order: qty as text).
-      const parsed = await page.evaluate(() => {
-        const out = []; const dbg = [];
-        document.querySelectorAll('tr').forEach((tr) => {
-          const tds = tr.querySelectorAll('td');
-          if (tds.length < 3) return;
-          const code = (tds[0].innerText || '').trim();
-          if (!/^\d+$/.test(code)) return; // first cell = numeric product code
-          let qty = 0;
-          const inp = tr.querySelector('input');
-          if (inp && /\d/.test(inp.value || '')) qty = parseFloat(String(inp.value).replace(/[^0-9.]/g, ''));
-          if (!qty) { // else: first integer-only cell after the code (price/total have decimals)
-            for (let i = 1; i < tds.length; i++) { const t = (tds[i].innerText || '').trim(); if (/^\d+$/.test(t)) { qty = parseInt(t, 10); break; } }
-          }
-          if (qty > 0) out.push({ code, qty });
-          if (dbg.length < 3) dbg.push((tr.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 120));
+      const out = await parseOrder();
+      const iso = toISO(o.deliveryDate);
+      byDate[iso] = byDate[iso] || {};
+      for (const li of out) byDate[iso][li.code] = (byDate[iso][li.code] || 0) + li.qty;
+      log(`  Order ${o.orderNo} (${iso}): ${out.length} line(s).`);
+    }
+    for (const [iso, agg] of Object.entries(byDate)) {
+      const lns = Object.entries(agg).map(([code, qty]) => ({ code, qty }));
+      try {
+        await fetch(`${BACKEND}/api/ops?action=alon-order-save`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'x-colette-secret': SECRET },
+          body: JSON.stringify({ date: iso, lines: lns, source: 'alon' }),
         });
-        return { out, dbg };
-      });
-      for (const li of parsed.out) agg[li.code] = (agg[li.code] || 0) + li.qty;
-      log(`  Order ${orderNo}: ${parsed.out.length} line(s). sample rows:`, JSON.stringify(parsed.dbg));
+        log(`Saved Alon order for ${iso} → dashboard (${lns.length} items).`);
+      } catch (e) { log('Could not save Alon order for', iso, String(e)); }
     }
 
-    const lines = Object.entries(agg).map(([code, qty]) => ({ code, qty }));
-    log('Aggregated lines:', JSON.stringify(lines));
-
-    // Save the REAL Alon order for this delivery date so the dashboard calendar
-    // shows exactly what's in FlexiBake (source='alon'). Date as ISO YYYY-MM-DD.
-    const isoDate = (() => { const [m, d, y] = targetDate.split('/'); return y && m && d ? `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}` : targetDate; })();
-    try {
-      await fetch(`${BACKEND}/api/ops?action=alon-order-save`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-colette-secret': SECRET },
-        body: JSON.stringify({ date: isoDate, lines, source: 'alon' }),
-      });
-      log('Saved Alon order for', isoDate, '→ dashboard calendar.');
-    } catch (e) { log('Could not save Alon order snapshot:', String(e)); }
+    // Today's delivery lines drive the Clover inventory sync.
+    const isoDate = toISO(targetDate);
+    const todayLines = Object.entries(byDate[isoDate] || {}).map(([code, qty]) => ({ code, qty }));
+    log('Today delivery', isoDate, '→', JSON.stringify(todayLines));
 
     // Fresh-day policy: zero EVERYTHING first, then load ONLY today's delivery.
     // Done here (after reading Alon so a login failure never wipes stock) — the
@@ -159,13 +155,13 @@ const run = async () => {
     log('Zeroing all Clover stock before loading today’s numbers…');
     await resetZero();
 
-    if (!lines.length) { log('No positive quantities found — inventory left at zero for today.'); await browser.close(); return; }
+    if (!todayLines.length) { log('No delivery today — inventory left at zero.'); await browser.close(); return; }
 
     // 4) Push to Clover backend. Stock was just zeroed, so add == set to today's qty.
     const res = await fetch(`${BACKEND}/api/ops`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-colette-secret': SECRET },
-      body: JSON.stringify({ action: 'inventory-receive', lines }),
+      body: JSON.stringify({ action: 'inventory-receive', lines: todayLines }),
     });
     const out = await res.json();
     if (!res.ok || !out.ok) { console.error('Backend error:', JSON.stringify(out)); process.exit(1); }
