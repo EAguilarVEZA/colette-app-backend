@@ -1177,19 +1177,24 @@ export async function saveAlonOrder(date: string, lines: any[], source = 'manual
 // Full Alon product catalog (every product code+name the scraper has seen) so the
 // dashboard can offer the ENTIRE list to order, not just curated items.
 const ALON_CATALOG_KEY = 'colette:alon_catalog';
-export async function getAlonCatalog(): Promise<{ code: string; name: string }[]> {
+export async function getAlonCatalog(): Promise<{ code: string; name: string; price?: number }[]> {
   const r = await kvREST(['GET', ALON_CATALOG_KEY]);
   if (r.ok) { try { return r.result ? JSON.parse(r.result) : []; } catch { return []; } }
   const c = await redisTCP(); if (c) { try { const v = await c.get(ALON_CATALOG_KEY); return v ? JSON.parse(v) : []; } catch { return []; } }
   return [];
 }
-export async function saveAlonCatalog(lines: { code: string; name: string }[]): Promise<number> {
-  // Merge with existing so names/codes accumulate (never shrink the catalog).
-  const cur = await getAlonCatalog();
-  const map = new Map<string, string>();
-  for (const c of cur) if (c && c.code) map.set(String(c.code), c.name || '');
-  for (const c of (Array.isArray(lines) ? lines : [])) { if (c && c.code) { const k = String(c.code); if (!map.get(k) && c.name) map.set(k, c.name); else if (!map.has(k)) map.set(k, c.name || ''); } }
-  const out = [...map.entries()].map(([code, name]) => ({ code, name })).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+export async function saveAlonCatalog(lines: { code: string; name: string; price?: number }[], replace = false): Promise<number> {
+  // Merge (default) so names/prices accumulate; replace=true sets the authoritative
+  // full list (used by the catalog-harvest task that reads the new-order form).
+  const map = new Map<string, { name: string; price: number }>();
+  if (!replace) { for (const c of await getAlonCatalog()) if (c && c.code) map.set(String(c.code), { name: c.name || '', price: Number(c.price) || 0 }); }
+  for (const c of (Array.isArray(lines) ? lines : [])) {
+    if (!c || !c.code) continue;
+    const k = String(c.code); const e = map.get(k) || { name: '', price: 0 };
+    if (c.name) e.name = c.name; if (Number(c.price) > 0) e.price = Number(c.price);
+    map.set(k, e);
+  }
+  const out = [...map.entries()].map(([code, e]) => ({ code, name: e.name, price: e.price })).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
   const s = JSON.stringify(out);
   const r = await kvREST(['SET', ALON_CATALOG_KEY, s]);
   if (!r.ok) { const c = await redisTCP(); if (c) { try { await c.set(ALON_CATALOG_KEY, s); } catch { /* best effort */ } } }
