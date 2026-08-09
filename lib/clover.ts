@@ -1068,3 +1068,34 @@ export async function notifyOwner(opts: { sms?: string; emailSubject?: string; e
   } else results.email = 'skipped';
   return results;
 }
+
+// ================== Team management (admin screen → Redis) ==================
+const TEAM_KEY = 'colette:team';
+export interface TeamMember { name: string; phone?: string; pin: string; rate?: number }
+
+export async function getTeam(): Promise<TeamMember[]> {
+  const r = await kvREST(['GET', TEAM_KEY]);
+  if (r.ok) { try { return r.result ? JSON.parse(r.result) : []; } catch { return []; } }
+  const c = await redisTCP(); if (c) { try { const v = await c.get(TEAM_KEY); return v ? JSON.parse(v) : []; } catch { return []; } }
+  return [];
+}
+export async function saveTeam(team: TeamMember[]): Promise<void> {
+  const s = JSON.stringify(Array.isArray(team) ? team : []);
+  const r = await kvREST(['SET', TEAM_KEY, s]);
+  if (r.ok) return;
+  const c = await redisTCP(); if (c) { try { await c.set(TEAM_KEY, s); } catch { /* best effort */ } }
+}
+// PIN → employee name: Redis team first, then EMPLOYEE_PINS env, then a first-run
+// fallback (any 3–8 digits) only when nothing is configured yet.
+export async function employeeForPinAsync(pin: string): Promise<string | null> {
+  const raw = (pin || '').trim(); if (!raw) return null;
+  let team: TeamMember[] = [];
+  try { team = await getTeam(); } catch { team = []; }
+  const m = team.find((x) => String(x.pin).trim() === raw);
+  if (m) return m.name || ('Staff ' + raw);
+  let map: Record<string, string> = {};
+  try { map = JSON.parse(process.env.EMPLOYEE_PINS || '{}'); } catch { map = {}; }
+  if (map[raw]) return map[raw];
+  if (team.length === 0 && Object.keys(map).length === 0 && /^\d{3,8}$/.test(raw)) return `Staff · PIN ${raw}`;
+  return null;
+}
