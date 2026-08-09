@@ -12,6 +12,7 @@ import {
   employeeForPin, employeeForPinAsync, getTeam, saveTeam, buildOrderLink, savePendingOrder, listPendingOrders, resolvePendingOrder, notifyOwner,
   togglePunch, clockStatus, listPunches,
   getShifts, saveShifts, listTimeOff, addTimeOff, resolveTimeOff,
+  getAlonOrders, saveAlonOrder,
 } from '../lib/clover.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -105,6 +106,34 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (gh.status === 204) return res.status(200).json({ ok: true, dispatched: true, task });
         const detail = await gh.text();
         return fail(res, 502, 'Dispatch failed', detail);
+      }
+      case 'alon-order-dates': {
+        // Which delivery dates have a stored Alon order (for calendar markers).
+        if (req.method !== 'GET') return fail(res, 405, 'Use GET');
+        const all = await getAlonOrders();
+        const dates = Object.keys(all).map((d) => ({ date: d, count: (all[d]?.lines || []).length, source: all[d]?.source || 'alon' }));
+        return res.status(200).json({ ok: true, dates });
+      }
+      case 'alon-order-get': {
+        // The real Alon order for one delivery date: ?date=YYYY-MM-DD.
+        if (req.method !== 'GET') return fail(res, 405, 'Use GET');
+        const date = String(req.query.date || '').trim();
+        if (!date) return fail(res, 400, 'date required (YYYY-MM-DD)');
+        const all = await getAlonOrders();
+        const o = all[date] || { lines: [], at: null, source: null };
+        return res.status(200).json({ ok: true, date, order: o });
+      }
+      case 'alon-order-save': {
+        // Save/replace the order for a delivery date. Admin secret (also used by
+        // the scraper, which writes the real read with source='alon').
+        if (req.method !== 'POST') return fail(res, 405, 'Use POST');
+        if (!requireAuth()) return;
+        const date = String(body?.date || '').trim();
+        if (!date) return fail(res, 400, 'date required (YYYY-MM-DD)');
+        const lines = Array.isArray(body?.lines) ? body.lines : [];
+        const source = body?.source === 'alon' ? 'alon' : 'manual';
+        const saved = await saveAlonOrder(date, lines, source);
+        return res.status(200).json({ ok: true, date, order: saved });
       }
       case 'customers-export': {
         if (req.method !== 'GET') return fail(res, 405, 'Use GET');
@@ -210,7 +239,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
       case 'shifts-save': {
         if (req.method !== 'POST') return fail(res, 405, 'Use POST');
-        if (!requireAuth()) return;
+        // The owner (admin secret) OR an authorized scheduler's PIN may edit shifts.
+        // Schedulers are named in SCHEDULERS env (comma-separated); default: Marco, Melissa.
+        let allowed = authed;
+        if (!allowed && body?.pin) {
+          const who = await employeeForPinAsync(String(body.pin));
+          const SCHEDULERS = (process.env.SCHEDULERS || 'marco,melissa').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+          if (who && SCHEDULERS.includes(who.toLowerCase())) allowed = true;
+        }
+        if (!allowed) return fail(res, 401, 'Not authorized to edit the schedule');
         const shifts = (body?.shifts && typeof body.shifts === 'object') ? body.shifts : null;
         if (!shifts) return fail(res, 400, 'shifts object required');
         await saveShifts(shifts);
@@ -307,7 +344,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(200).json({ ok: true });
       }
       default:
-        return fail(res, 400, 'Unknown action. Use reorder-suggest | reorder-plan | stockout | metrics | place-order | run-task | set-costs | recent-orders | notify-customer | customers-export | inventory-receive | inventory-reset-zero | submit-order | pending-orders | resolve-order');
+        return fail(res, 400, 'Unknown action. Use reorder-suggest | reorder-plan | stockout | metrics | place-order | run-task | alon-order-get | alon-order-save | alon-order-dates | set-costs | recent-orders | notify-customer | customers-export | inventory-receive | inventory-reset-zero | submit-order | pending-orders | resolve-order');
     }
   } catch (e: any) {
     fail(res, e?.status || 502, `${action} failed`, e?.body ?? String(e));
