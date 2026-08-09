@@ -11,6 +11,7 @@ import {
   suggestReorder, suggestReorderSmart, getAllCustomers, receiveStock, resetStockZero, salesSummary, setItemCosts, setItemPrices, stockoutAnalysis, getRecentOrders, notifyCustomer,
   employeeForPin, employeeForPinAsync, getTeam, saveTeam, buildOrderLink, savePendingOrder, listPendingOrders, resolvePendingOrder, notifyOwner,
   togglePunch, clockStatus, listPunches,
+  getShifts, saveShifts, listTimeOff, addTimeOff, resolveTimeOff,
 } from '../lib/clover.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -177,6 +178,56 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (authed) return res.status(200).json({ ok: true, role: 'admin', name: 'Admin', key: process.env.SYNC_SECRET || '' });
         return fail(res, 401, 'Enter your PIN, or admin ID + password');
       }
+      case 'shifts-get': {
+        // Schedule shifts + a rate-free roster (names + days off only) so staff can
+        // view the schedule/My Week WITHOUT seeing anyone's pay. No PII/rates here.
+        if (req.method !== 'GET') return fail(res, 405, 'Use GET');
+        const roster = (await getTeam()).map((m: any) => ({ name: m.name, daysOff: Array.isArray(m.daysOff) ? m.daysOff : [] }));
+        const approved = (await listTimeOff()).filter((t) => t.status === 'approved').map((t) => ({ name: t.name, from: t.from, to: t.to }));
+        return res.status(200).json({ ok: true, shifts: await getShifts(), roster, timeoff: approved });
+      }
+      case 'shifts-save': {
+        if (req.method !== 'POST') return fail(res, 405, 'Use POST');
+        if (!requireAuth()) return;
+        const shifts = (body?.shifts && typeof body.shifts === 'object') ? body.shifts : null;
+        if (!shifts) return fail(res, 400, 'shifts object required');
+        await saveShifts(shifts);
+        return res.status(200).json({ ok: true });
+      }
+      case 'timeoff-request': {
+        // Employee submits a time-off request (PIN-gated).
+        if (req.method !== 'POST') return fail(res, 405, 'Use POST');
+        const employee = await employeeForPinAsync(String(body?.pin || ''));
+        if (!employee) return fail(res, 401, 'PIN not recognized');
+        const from = String(body?.from || '').trim(), to = String(body?.to || from).trim();
+        if (!from) return fail(res, 400, 'from date required');
+        const at = Date.now();
+        const t = { id: at.toString(36) + Math.random().toString(36).slice(2, 6), name: employee, pin: String(body?.pin), from, to, reason: String(body?.reason || '').slice(0, 200), status: 'pending' as const, at };
+        await addTimeOff(t);
+        try { await notifyOwner({ sms: `Colette: ${employee} requested time off ${from}${to && to !== from ? '–' + to : ''}${t.reason ? ' ('+t.reason+')' : ''}.`, emailSubject: `Time-off request — ${employee}`, emailHtml: `<p><b>${employee}</b> requested time off: <b>${from}${to && to !== from ? ' – ' + to : ''}</b>${t.reason ? '<br>Reason: ' + t.reason : ''}</p>` }); } catch { /* best effort */ }
+        return res.status(200).json({ ok: true, request: t });
+      }
+      case 'timeoff-mine': {
+        // An employee's own requests (PIN-gated).
+        if (req.method !== 'POST') return fail(res, 405, 'Use POST');
+        const employee = await employeeForPinAsync(String(body?.pin || ''));
+        if (!employee) return fail(res, 401, 'PIN not recognized');
+        const mine = (await listTimeOff()).filter((t) => String(t.pin) === String(body?.pin));
+        return res.status(200).json({ ok: true, requests: mine });
+      }
+      case 'timeoff-list': {
+        if (req.method !== 'GET') return fail(res, 405, 'Use GET');
+        if (!requireAuth()) return;
+        return res.status(200).json({ ok: true, requests: await listTimeOff() });
+      }
+      case 'timeoff-resolve': {
+        if (req.method !== 'POST') return fail(res, 405, 'Use POST');
+        if (!requireAuth()) return;
+        const id = String(body?.id || ''); const status = body?.status === 'approved' ? 'approved' : 'denied';
+        if (!id) return fail(res, 400, 'id required');
+        await resolveTimeOff(id, status);
+        return res.status(200).json({ ok: true });
+      }
       case 'punch': {
         // Employee clock in/out — PIN-gated (staff use it without the admin key).
         if (req.method !== 'POST') return fail(res, 405, 'Use POST');
@@ -214,6 +265,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             phone: String(m?.phone || '').trim(),
             pin: String(m?.pin || '').trim(),
             rate: Number(m?.rate) || 0,
+            daysOff: Array.isArray(m?.daysOff) ? m.daysOff.map((x: any) => String(x)) : [],
           }))
           .filter((m: any) => m.name && /^\d{3,8}$/.test(m.pin));
         await saveTeam(clean);
