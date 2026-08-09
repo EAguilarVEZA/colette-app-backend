@@ -136,30 +136,35 @@ const run = async () => {
     // calendar shows the REAL order Alon has for any date — including advance orders.
     const byDate = {};   // iso -> { code: {name, qty} }
     const catalog = {};  // code -> name (union of every product seen — the full Alon list)
+    // Open one order (by order #) and read it, waiting for the page to settle.
+    const openAndRead = async (orderNo) => {
+      await openOrders();
+      const rowLoc = page.locator('tr', { hasText: orderNo }).first();
+      await Promise.all([ page.waitForLoadState('domcontentloaded').catch(() => {}), rowLoc.getByText('View', { exact: true }).click() ]);
+      await page.waitForLoadState('domcontentloaded').catch(() => {});
+      // Wait until product-code rows exist AND quantities are present (text OR
+      // populated inputs — open/advance orders fill their inputs via AJAX).
+      await page.waitForFunction(() => {
+        const rows = [...document.querySelectorAll('tr')];
+        const hasCode = rows.some((tr) => [...tr.querySelectorAll('td')].some((td) => /^\d{3,7}$/.test((td.innerText || '').trim())));
+        const hasQty = rows.some((tr) => [...tr.querySelectorAll('input')].some((i) => /\d/.test(String(i.value || i.getAttribute('value') || ''))))
+          || rows.some((tr) => { const t = [...tr.querySelectorAll('td')].map((td) => (td.innerText || '').trim()); return t.some((x) => /^\d{3,7}$/.test(x)) && t.some((x) => /^\d{1,3}$/.test(x)); });
+        return hasCode && hasQty;
+      }, { timeout: 15000 }).catch(() => {});
+      await page.waitForTimeout(2500);
+      let parsed = { out: [], all: [], dbg: [] };
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try { parsed = await parseOrder(); if (parsed.out.length) break; await page.waitForTimeout(1500); }
+        catch { await page.waitForTimeout(1500); }
+      }
+      return parsed;
+    };
+
     for (const o of allOrders) {
       try {
-        await openOrders();
-        const rowLoc = page.locator('tr', { hasText: o.orderNo }).first();
-        await Promise.all([ page.waitForLoadState('domcontentloaded').catch(() => {}), rowLoc.getByText('View', { exact: true }).click() ]);
-        // Let the ASP.NET postback finish navigating BEFORE reading, else
-        // page.evaluate throws "execution context destroyed". Wait for a
-        // product-code row to appear, then read with one retry.
-        await page.waitForLoadState('domcontentloaded').catch(() => {});
-        // Wait until product-code rows exist AND quantities are present (as text
-        // OR as populated inputs — open orders fill their input values via AJAX).
-        await page.waitForFunction(() => {
-          const rows = [...document.querySelectorAll('tr')];
-          const hasCode = rows.some((tr) => [...tr.querySelectorAll('td')].some((td) => /^\d{3,7}$/.test((td.innerText || '').trim())));
-          const hasQty = rows.some((tr) => [...tr.querySelectorAll('input')].some((i) => /\d/.test(String(i.value || i.getAttribute('value') || ''))))
-            || rows.some((tr) => { const t = [...tr.querySelectorAll('td')].map((td) => (td.innerText || '').trim()); return t.some((x) => /^\d{3,7}$/.test(x)) && t.some((x) => /^\d{1,3}$/.test(x)); });
-          return hasCode && hasQty;
-        }, { timeout: 15000 }).catch(() => {});
-        await page.waitForTimeout(2000);
-        let parsed = { out: [], dbg: [] };
-        for (let attempt = 0; attempt < 2; attempt++) {
-          try { parsed = await parseOrder(); if (parsed.out.length) break; await page.waitForTimeout(1500); }
-          catch { await page.waitForTimeout(1500); }
-        }
+        let parsed = await openAndRead(o.orderNo);
+        // Advance orders are intermittent — if empty, fully re-open once more.
+        if (!parsed.out.length) { await page.waitForTimeout(1200); parsed = await openAndRead(o.orderNo); }
         const out = parsed.out;
         for (const c of (parsed.all || [])) { if (c.code && (!(c.code in catalog) || (!catalog[c.code] && c.name))) catalog[c.code] = c.name || ''; }
         const iso = toISO(o.deliveryDate);
@@ -170,6 +175,9 @@ const run = async () => {
     }
     for (const [iso, agg] of Object.entries(byDate)) {
       const lns = Object.entries(agg).map(([code, e]) => ({ code, name: e.name || '', qty: e.qty }));
+      // NEVER overwrite a saved order with an empty read (advance-order reads are
+      // intermittent). Only save when we actually read line items.
+      if (!lns.length) { log(`Skipped ${iso} — read 0 items (keeping previous saved order).`); continue; }
       try {
         await fetch(`${BACKEND}/api/ops?action=alon-order-save`, {
           method: 'POST', headers: { 'Content-Type': 'application/json', 'x-colette-secret': SECRET },
