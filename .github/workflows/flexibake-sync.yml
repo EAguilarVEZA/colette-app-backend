@@ -8,7 +8,7 @@ on:
   workflow_dispatch:         # manual "Run workflow" from the Actions tab
     inputs:
       task:
-        description: 'sync | reset | setcosts | place'
+        description: 'sync | catalog | reset | setcosts | place'
         required: false
         default: 'sync'
       date:
