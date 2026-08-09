@@ -123,15 +123,26 @@ const run = async () => {
     // calendar shows the REAL order Alon has for any date — including advance orders.
     const byDate = {}; // iso -> { code: qty }
     for (const o of allOrders) {
-      await openOrders();
-      const rowLoc = page.locator('tr', { hasText: o.orderNo }).first();
-      await Promise.all([ page.waitForLoadState('domcontentloaded').catch(() => {}), rowLoc.getByText('View', { exact: true }).click() ]);
-      await page.waitForTimeout(1500);
-      const out = await parseOrder();
-      const iso = toISO(o.deliveryDate);
-      byDate[iso] = byDate[iso] || {};
-      for (const li of out) byDate[iso][li.code] = (byDate[iso][li.code] || 0) + li.qty;
-      log(`  Order ${o.orderNo} (${iso}): ${out.length} line(s).`);
+      try {
+        await openOrders();
+        const rowLoc = page.locator('tr', { hasText: o.orderNo }).first();
+        await Promise.all([ page.waitForLoadState('domcontentloaded').catch(() => {}), rowLoc.getByText('View', { exact: true }).click() ]);
+        // Let the ASP.NET postback finish navigating BEFORE reading, else
+        // page.evaluate throws "execution context destroyed". Wait for a
+        // product-code row to appear, then read with one retry.
+        await page.waitForLoadState('domcontentloaded').catch(() => {});
+        await page.waitForFunction(() => [...document.querySelectorAll('td')].some((td) => /^\d{3,}$/.test((td.innerText || '').trim())), { timeout: 15000 }).catch(() => {});
+        await page.waitForTimeout(1200);
+        let out = [];
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try { out = await parseOrder(); break; }
+          catch { await page.waitForTimeout(1500); }
+        }
+        const iso = toISO(o.deliveryDate);
+        byDate[iso] = byDate[iso] || {};
+        for (const li of out) byDate[iso][li.code] = (byDate[iso][li.code] || 0) + li.qty;
+        log(`  Order ${o.orderNo} (${iso}): ${out.length} line(s).`);
+      } catch (e) { log(`  Order ${o.orderNo}: read failed —`, String(e).slice(0, 120)); }
     }
     for (const [iso, agg] of Object.entries(byDate)) {
       const lns = Object.entries(agg).map(([code, qty]) => ({ code, qty }));
