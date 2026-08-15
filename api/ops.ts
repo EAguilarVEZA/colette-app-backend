@@ -227,20 +227,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (req.method !== 'POST') return fail(res, 405, 'Use POST');
         const employee = await employeeForPinAsync(String(body?.pin || ''));
         if (!employee) return fail(res, 401, 'Invalid PIN');
-        const c = (body?.c && typeof body.c === 'object') ? body.c : {};
-        const r = (body?.r && typeof body.r === 'object') ? body.r : {};
-        const i = (body?.i && typeof body.i === 'object') ? body.i : {};
-        const counts = { costco: Object.keys(c).length, rd: Object.keys(r).length, ic: Object.keys(i).length };
-        const totalItems = counts.costco + counts.rd + counts.ic;
+        const obj = (x: any) => (x && typeof x === 'object') ? x : {};
+        const c = obj(body?.c), r = obj(body?.r), i = obj(body?.i);
+        const p = obj(body?.p), a = obj(body?.a), cm = obj(body?.cm), bd = obj(body?.bd);
+        const counts = {
+          costco: Object.keys(c).length, rd: Object.keys(r).length, ic: Object.keys(i).length,
+          paname: Object.keys(p).length, amazon: Object.keys(a).length, cambie: Object.keys(cm).length, badeko: Object.keys(bd).length,
+        };
+        const totalItems = counts.costco + counts.rd + counts.ic + counts.paname + counts.amazon + counts.cambie + counts.badeko;
         if (!totalItems) return fail(res, 400, 'Order is empty');
         const at = Date.now();
         const id = at.toString(36) + Math.random().toString(36).slice(2, 6);
-        const link = buildOrderLink({ e: employee, t: at, c, r, i });
-        const order = { id, employee, at, counts, totalItems, link, orders: { c, r, i } };
+        const link = buildOrderLink({ e: employee, t: at, c, r, i, p, a, cm, bd });
+        const order = { id, employee, at, counts, totalItems, link, orders: { c, r, i, p, a, cm, bd } };
         await savePendingOrder(order);
-        const sms = `Colette: new supplier order from ${employee} — Costco ${counts.costco}, RD ${counts.rd}, Publix ${counts.ic} items. Place it: ${link}`;
+        // Only mention suppliers that actually have items.
+        const parts = [
+          ['Costco', counts.costco], ['RD', counts.rd], ['Publix', counts.ic],
+          ['Paname', counts.paname], ['Amazon', counts.amazon], ['Cambie', counts.cambie], ['BakeDeco', counts.badeko],
+        ].filter(([, n]) => (n as number) > 0).map(([label, n]) => `${label} ${n}`);
+        const sms = `Colette: new supplier order from ${employee} — ${parts.join(', ')} items. Place it: ${link}`;
         const emailHtml = `<p><b>${employee}</b> submitted a supplier order.</p>`
-          + `<p>Costco: ${counts.costco} items · Restaurant Depot: ${counts.rd} items · Publix: ${counts.ic} items</p>`
+          + `<p>${parts.join(' · ')}</p>`
           + `<p><a href="${link}">Open the order sheet with these quantities pre-filled →</a></p>`
           + `<p style="color:#888;font-size:12px">Submitted ${new Date(at).toLocaleString('en-US', { timeZone: 'America/New_York' })} ET</p>`;
         const notify = await notifyOwner({ sms, emailSubject: `New supplier order from ${employee}`, emailHtml });
