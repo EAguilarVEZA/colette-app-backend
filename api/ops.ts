@@ -68,6 +68,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (req.method !== 'POST') return fail(res, 405, 'Use POST');
         const lines = body?.lines;
         const targetDay = body?.targetDay || '';
+        // Use the exact ISO delivery date (targetDate) for the workflow — the weekday
+        // name alone (targetDay) can't be parsed and would fall back to the wrong day.
+        const targetDate = body?.targetDate || targetDay || '';
+        // "Approve & Place" is an explicit approval → actually submit to Alon by default.
+        // Callers can pass place_mode:'review' or 'dryrun' to hold before submit.
+        const placeMode = String(body?.place_mode || 'submit');
         if (!Array.isArray(lines) || !lines.length) return fail(res, 400, 'lines[] required');
         const token = process.env.GH_DISPATCH_TOKEN;
         const repo = process.env.GH_REPO || 'EAguilarVEZA/colette-app-backend';
@@ -75,9 +81,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           const gh = await fetch(`https://api.github.com/repos/${repo}/actions/workflows/flexibake-sync.yml/dispatches`, {
             method: 'POST',
             headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json', 'User-Agent': 'colette-dashboard' },
-            body: JSON.stringify({ ref: 'main', inputs: { task: 'place', order: JSON.stringify(lines).slice(0, 60000), date: targetDay } }),
+            body: JSON.stringify({ ref: 'main', inputs: { task: 'place', order: JSON.stringify(lines).slice(0, 60000), date: targetDate, place_mode: placeMode } }),
           });
-          if (gh.status === 204) return res.status(200).json({ ok: true, placed: true, dispatched: true, targetDay, lines });
+          if (gh.status === 204) return res.status(200).json({ ok: true, placed: true, dispatched: true, targetDay, targetDate, place_mode: placeMode, lines });
           const detail = await gh.text();
           return fail(res, 502, 'Dispatch failed', detail);
         }
