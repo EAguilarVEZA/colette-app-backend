@@ -301,15 +301,17 @@ const placeOrder = async () => {
     } else {
       log('Creating new order for', iso);
       await page.locator('input[type="date"]').first().fill(iso).catch(() => {});
-      await page.waitForTimeout(400);
-      await Promise.all([
-        page.waitForLoadState('domcontentloaded').catch(() => {}),
-        (async () => {
-          try { await page.getByRole('link', { name: 'Next', exact: true }).first().click({ timeout: 8000 }); }
-          catch { await page.locator('[id$="PB_NEXT"]').first().click().catch(() => {}); }
-        })(),
-      ]);
-      await page.waitForTimeout(1800);
+      await page.waitForTimeout(500);
+      // FlexiBake's "Next" needs up to two clicks: the first is a date-validation
+      // postback that stays on FBWSDeliveryDate.aspx (the button turns green), the
+      // second actually advances to the order form. Click until we land on it.
+      for (let attempt = 0; attempt < 3 && !/FBWSOpenOrder\.aspx/.test(page.url()); attempt++) {
+        try { await page.getByRole('link', { name: 'Next', exact: true }).first().click({ timeout: 8000 }); }
+        catch { await page.locator('[id$="PB_NEXT"]').first().click().catch(() => {}); }
+        await page.waitForLoadState('domcontentloaded').catch(() => {});
+        await page.waitForTimeout(1600);
+      }
+      log('After Next clicks, at:', page.url());
     }
 
     // Wait for the order form to fully load (ASP.NET postbacks navigate async) —
