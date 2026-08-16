@@ -356,12 +356,25 @@ const placeOrder = async () => {
 
     if (PLACE_MODE !== 'submit') { log('REVIEW mode — HOLDING before final submit. Nothing was submitted.'); await browser.close(); return; }
 
-    // Final submit — ONLY in submit mode
-    try { await page.getByRole('link', { name: /submit|place order|confirm|save/i }).first().click({ timeout: 8000 }); }
-    catch { await page.locator('[id*="SUBMIT"],[id*="CONFIRM"],[id*="SAVE"]').first().click().catch(() => {}); }
-    await page.waitForTimeout(1800);
+    // Final submit — ONLY in submit mode. The review page has a desktop
+    // "Submit Order" (id ends PB_SAVE3) AND a hidden mobile variant (…PB_SAVE3_mbl);
+    // target the desktop one specifically so we don't click a hidden element that
+    // never actually submits.
+    let clicked = false;
+    try { await page.locator('[id$="PB_SAVE3"]').first().click({ timeout: 8000 }); clicked = true; }
+    catch {
+      try { await page.getByRole('link', { name: /submit order/i }).first().click({ timeout: 5000 }); clicked = true; }
+      catch { await page.locator('[id*="SUBMIT"],[id*="CONFIRM"]').first().click().catch(() => {}); }
+    }
+    // Verify we actually reached the "Order Saved" confirmation — otherwise the
+    // order was NOT really placed (this was the silent failure before).
+    await page.waitForURL('**/FBWSConfirmOrder.aspx', { timeout: 15000 }).catch(() => {});
+    await page.waitForTimeout(1200);
     await page.screenshot({ path: 'order-submitted.png', fullPage: true }).catch(() => {});
-    log('SUBMITTED order for', iso);
+    const html = await page.content().catch(() => '');
+    const confirmed = /FBWSConfirmOrder\.aspx/.test(page.url()) || /Order Saved|Thank you for your order/i.test(html);
+    if (confirmed) log('SUBMITTED order for', iso, '— confirmation page reached (Order Saved).');
+    else log('WARNING: clicked Submit but did NOT reach the Order Saved page for', iso, '· clicked=' + clicked + ' · url=' + page.url());
   } finally {
     await browser.close();
   }
