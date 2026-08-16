@@ -7,7 +7,7 @@
 // Protected actions require header x-colette-secret === SYNC_SECRET.
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
-  applyCors, assertConfigured, fail,
+  applyCors, assertConfigured, fail, cfg,
   suggestReorder, suggestReorderSmart, getAllCustomers, receiveStock, resetStockZero, salesSummary, setItemCosts, setItemPrices, stockoutAnalysis, getRecentOrders, notifyCustomer,
   employeeForPin, employeeForPinAsync, getTeam, saveTeam, buildOrderLink, savePendingOrder, listPendingOrders, resolvePendingOrder, notifyOwner,
   togglePunch, clockStatus, listPunches,
@@ -189,6 +189,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (!requireAuth()) return; // contains customer PII
         const days = Math.min(Number(req.query.days) || 3, 14);
         return res.status(200).json({ ok: true, orders: await getRecentOrders({ days }) });
+      }
+      case 'sales-breakdown': {
+        if (req.method !== 'GET') return fail(res, 405, 'Use GET');
+        if (!requireAuth()) return; // financial data — admin only
+        const startMs = Number(req.query.start) || (Date.now() - 86400000);
+        const endMs = Number(req.query.end) || Date.now();
+        res.setHeader('Cache-Control', 's-maxage=120, stale-while-revalidate=600');
+        return res.status(200).json({ ok: true, ...(await salesBreakdown(startMs, endMs)) });
       }
       case 'notify-customer': {
         if (req.method !== 'POST') return fail(res, 405, 'Use POST');
@@ -395,10 +403,92 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(200).json({ ok: true });
       }
       default:
-        return fail(res, 400, 'Unknown action. Use reorder-suggest | reorder-plan | stockout | metrics | place-order | run-task | commit-file | alon-order-get | alon-order-save | alon-order-dates | alon-catalog-get | alon-catalog-save | set-costs | recent-orders | notify-customer | customers-export | inventory-receive | inventory-reset-zero | submit-order | pending-orders | resolve-order');
+        return fail(res, 400, 'Unknown action. Use reorder-suggest | reorder-plan | stockout | metrics | sales-breakdown | place-order | run-task | commit-file | alon-order-get | alon-order-save | alon-order-dates | alon-catalog-get | alon-catalog-save | set-costs | recent-orders | notify-customer | customers-export | inventory-receive | inventory-reset-zero | submit-order | pending-orders | resolve-order');
     }
   } catch (e: any) {
     fail(res, e?.status || 502, `${action} failed`, e?.body ?? String(e));
   }
 }
 function safeParse(s: string) { try { return JSON.parse(s); } catch { return null; } }
+
+// ---- Sales breakdown (tender types, refunds, discounts) — reads Clover directly ----
+async function cloverGet(path: string): Promise<any> {
+  const url = `${cfg.apiBase}/v3/merchants/${cfg.merchantId}${path}`;
+  for (let attempt = 0; ; attempt++) {
+    const r = await fetch(url, { headers: { Authorization: `Bearer ${cfg.apiToken}`, 'Content-Type': 'application/json' } });
+    if (r.status === 429 && attempt < 5) { await new Promise((s) => setTimeout(s, 600 * (attempt + 1))); continue; }
+    const text = await r.text();
+    let b: any = null; try { b = text ? JSON.parse(text) : null; } catch { b = text; }
+    if (!r.ok) throw { status: r.status, body: b };
+    return b;
+  }
+}
+
+async function salesBreakdown(startMs: number, endMs: number) {
+  const fStart = encodeURIComponent(`createdTime>=${startMs}`);
+  const fEnd = encodeURIComponent(`createdTime<=${endMs}`);
+  const expand = 'payments.tender,payments.refunds,discounts,lineItems.discounts';
+  const tenders = new Map<string, { count: number; amount: number }>();
+  const discounts = new Map<string, { count: number; amount: number }>();
+  const refunds: { amount: number; order: string; time: number; reason: string; tender: string }[] = [];
+  let gross = 0, tax = 0, tips = 0, serviceCharge = 0, orders = 0, paymentsTotal = 0, refundTotal = 0;
+  let offset = 0; const pageSize = 1000, maxOrders = 30000; let fetched = 0;
+  while (fetched < maxOrders) {
+    const data = await cloverGet(`/orders?expand=${expand}&filter=${fStart}&filter=${fEnd}&limit=${pageSize}&offset=${offset}`);
+    const os: any[] = data?.elements || [];
+    if (!os.length) break;
+    for (const o of os) {
+      orders++;
+      gross += (o.total || 0);
+      if (typeof o.taxAmount === 'number') tax += o.taxAmount;
+      const sc = o.serviceCharge; if (sc && typeof sc.amount === 'number') serviceCharge += sc.amount;
+      for (const p of (o.payments?.elements || [])) {
+        // A fully-refunded payment can appear with result VOIDED; still count the tender.
+        const label = p.tender?.label || p.tender?.labelKey || 'Other';
+        const t = tenders.get(label) || { count: 0, amount: 0 };
+        t.count += 1; t.amount += (p.amount || 0); tenders.set(label, t);
+        paymentsTotal += (p.amount || 0);
+        tips += (p.tipAmount || 0);
+        for (const rf of (p.refunds?.elements || [])) {
+          const amt = rf.amount || 0; refundTotal += amt;
+          refunds.push({ amount: amt / 100, order: o.id, time: rf.createdTime || o.modifiedTime || o.createdTime || 0, reason: rf.reason || '', tender: label });
+        }
+      }
+      for (const d of (o.discounts?.elements || [])) {
+        const name = d.name || (d.percentage ? d.percentage + '% off' : 'Discount');
+        const amt = Math.abs(d.amount || 0);
+        const c0 = discounts.get(name) || { count: 0, amount: 0 }; c0.count += 1; c0.amount += amt; discounts.set(name, c0);
+      }
+      for (const li of (o.lineItems?.elements || [])) {
+        for (const d of (li.discounts?.elements || [])) {
+          const name = d.name || (d.percentage ? d.percentage + '% off' : 'Discount');
+          const amt = Math.abs(d.amount || 0);
+          const c0 = discounts.get(name) || { count: 0, amount: 0 }; c0.count += 1; c0.amount += amt; discounts.set(name, c0);
+        }
+      }
+    }
+    fetched += os.length; offset += pageSize;
+    if (os.length < pageSize) break;
+  }
+  const c = (n: number) => Math.round(n) / 100;
+  const tenderArr = [...tenders.entries()].map(([label, v]) => ({ label, count: v.count, amount: c(v.amount) })).sort((a, b) => b.amount - a.amount);
+  const totalTender = tenderArr.reduce((s, t) => s + t.amount, 0);
+  const discountArr = [...discounts.entries()].map(([name, v]) => ({ name, count: v.count, amount: c(v.amount) })).sort((a, b) => b.amount - a.amount);
+  refunds.sort((a, b) => (b.time || 0) - (a.time || 0));
+  return {
+    range: { start: startMs, end: endMs },
+    orders,
+    gross: c(gross),
+    net: c(gross - refundTotal),
+    tax: c(tax),
+    tips: c(tips),
+    serviceCharge: c(serviceCharge),
+    paymentsTotal: c(paymentsTotal),
+    refundTotal: c(refundTotal),
+    refundCount: refunds.length,
+    tenders: tenderArr.map((t) => ({ ...t, pct: totalTender ? Math.round((t.amount / totalTender) * 1000) / 10 : 0 })),
+    discounts: discountArr,
+    discountTotal: discountArr.reduce((s, d) => s + d.amount, 0),
+    refunds: refunds.slice(0, 100),
+  };
+}
