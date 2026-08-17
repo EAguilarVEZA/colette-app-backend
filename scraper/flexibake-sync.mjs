@@ -247,8 +247,9 @@ const placeTarget = () => {
 const placeOrder = async () => {
   const browser = await chromium.launch();
   const page = await browser.newPage();
+  const D = (...a) => log('[place]', ...a);
   try {
-    // Login (same flow as the sync job)
+    // ---- Login ----
     await page.goto(`${BASE}/FBWSLogon.aspx`, { waitUntil: 'networkidle' });
     await page.locator('input:not([type="password"]):not([type="hidden"]):not([type="submit"]):not([type="button"])').first().fill(USER);
     await page.locator('input[type="password"]').first().fill(PASS);
@@ -259,127 +260,156 @@ const placeOrder = async () => {
     ]);
     await page.waitForLoadState('domcontentloaded').catch(() => {});
     await page.waitForTimeout(1500);
-    log('Logged in as', USER, '· PLACE_MODE:', PLACE_MODE);
 
     const target = placeTarget();
     const iso = `${target.getFullYear()}-${String(target.getMonth() + 1).padStart(2, '0')}-${String(target.getDate()).padStart(2, '0')}`;
-    log('Target delivery date:', iso, `(${target.toDateString()})`);
+    const mdy = `${target.getMonth() + 1}/${target.getDate()}/${target.getFullYear()}`;
+    D('Target delivery:', iso, `(${mdy})`, '· mode:', PLACE_MODE);
 
-    // Quantities: ORDER env or smart recommendation for that weekday.
+    // Desired quantities: ORDER env or smart recommendation.
     let lines = [];
-    if ((process.env.ORDER || '').trim()) { try { lines = JSON.parse(process.env.ORDER); } catch { log('Bad ORDER JSON'); } }
+    if ((process.env.ORDER || '').trim()) { try { lines = JSON.parse(process.env.ORDER); } catch { D('Bad ORDER JSON'); } }
     if (!lines.length) {
       const r = await fetch(`${BACKEND}/api/ops?action=reorder-plan&dow=${target.getDay()}`).then((x) => x.json()).catch(() => ({}));
-      lines = (r.items || []).map((i) => ({ code: i.code, qty: i.suggested })).filter((l) => l.qty > 0);
-      log('Using smart recommendation:', JSON.stringify(lines));
+      lines = (r.items || []).map((i) => ({ code: i.code, qty: i.suggested }));
     }
-    if (!lines.length) { log('No quantities to place — aborting.'); await browser.close(); return; }
+    lines = lines.filter((l) => Number(l.qty) > 0);
+    if (!lines.length) { D('No quantities to place — aborting.'); await browser.close(); return; }
+    const want = {}; for (const l of lines) want[String(l.code)] = Number(l.qty);
+    D('Desired:', JSON.stringify(want));
 
-    // Delivery-date page: edit an existing order for that date if one exists, else create.
-    await page.goto(`${BASE}/FBWSDeliveryDate.aspx`, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await page.waitForTimeout(1000);
-    const opened = await page.evaluate((isoDate) => {
-      const td = new Date(isoDate).toDateString();
+    // ---- Is there already an OPEN order for this delivery date? ----
+    await page.goto(`${BASE}/FBWSOrders.aspx`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.waitForTimeout(1500);
+    const opened = await page.evaluate((mdyDate) => {
       for (const tr of document.querySelectorAll('tr')) {
-        const m = (tr.innerText || '').match(/[A-Za-z]{3}\.?\s+[A-Za-z]{3}\.?\s+\d{1,2},\s+\d{4}/);
-        if (m) {
-          const d = new Date(m[0].replace(/\./g, ''));
-          if (!isNaN(d) && d.toDateString() === td) {
-            const link = tr.querySelector('a[href*="__doPostBack"]');
-            const mm = link && link.getAttribute('href').match(/__doPostBack\('([^']+)'/);
-            if (mm) { __doPostBack(mm[1], ''); return 'edit'; }
-          }
+        const t = (tr.innerText || '').replace(/\s+/g, ' ');
+        if (t.includes(mdyDate) && /open/i.test(t)) {
+          const v = [...tr.querySelectorAll('a')].find((a) => /view/i.test(a.innerText || ''));
+          if (v) { v.click(); return true; }
         }
       }
-      return null;
-    }, iso);
+      return false;
+    }, mdy);
 
-    if (opened === 'edit') {
-      log('Editing existing order for', iso);
-      await page.waitForLoadState('domcontentloaded').catch(() => {});
-      await page.waitForTimeout(1800);
+    let editing = false;
+    if (opened) {
+      editing = true;
+      D('Existing OPEN order found for', mdy, '— editing it (View).');
+      await page.waitForURL('**/FBWSOpenOrder.aspx', { timeout: 20000 }).catch(() => {});
     } else {
-      log('Creating new order for', iso);
-      await page.locator('input[type="date"]').first().fill(iso).catch(() => {});
-      await page.waitForTimeout(500);
-      // FlexiBake's "Next" needs up to two clicks: the first is a date-validation
-      // postback that stays on FBWSDeliveryDate.aspx (the button turns green), the
-      // second actually advances to the order form. Click until we land on it.
-      for (let attempt = 0; attempt < 3 && !/FBWSOpenOrder\.aspx/.test(page.url()); attempt++) {
-        try { await page.getByRole('link', { name: 'Next', exact: true }).first().click({ timeout: 8000 }); }
-        catch { await page.locator('[id$="PB_NEXT"]').first().click().catch(() => {}); }
+      D('No existing order — creating a NEW one.');
+      await page.goto(`${BASE}/FBWSMain.aspx`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.waitForTimeout(1000);
+      await page.locator('a[href*="LNK_CURRENT_ORDER"]').first().click()
+        .catch(async () => { await page.getByText(/enter new order/i).first().click(); });
+      await page.waitForURL('**/FBWSDeliveryDate.aspx', { timeout: 20000 }).catch(() => {});
+      await page.waitForTimeout(1000);
+      await page.locator('#_ctl0_ContentPlaceHolder1_EF_DEL_DATE').fill(iso)
+        .catch(async () => { await page.locator('input[type="date"]').first().fill(iso); });
+      await page.waitForTimeout(400);
+      // "Next" needs up to two clicks to advance to the order form.
+      for (let i = 0; i < 4 && !/FBWSOpenOrder/.test(page.url()); i++) {
+        await page.locator('#_ctl0_ContentPlaceHolder1_PB_NEXT').first().click().catch(() => {});
         await page.waitForLoadState('domcontentloaded').catch(() => {});
         await page.waitForTimeout(1600);
       }
-      log('After Next clicks, at:', page.url());
     }
 
-    // Wait for the order form to fully load (ASP.NET postbacks navigate async) —
-    // don't touch the page until a product-code row is present.
     await page.waitForURL('**/FBWSOpenOrder.aspx', { timeout: 20000 }).catch(() => {});
-    await page.waitForLoadState('domcontentloaded').catch(() => {});
     await page.waitForFunction(
       () => [...document.querySelectorAll('td')].some((td) => /^\d{3,}$/.test((td.innerText || '').trim())),
       { timeout: 20000 },
     ).catch(() => {});
     await page.waitForTimeout(1000);
 
-    // Fill the QUANTITY input (4th cell) for each matching product code.
-    const filled = await page.evaluate((lines) => {
-      const byCode = {}; for (const l of lines) byCode[String(l.code)] = l.qty;
+    // ---- Fill quantities for codes present in the grid ----
+    const fillGrid = () => page.evaluate((w) => {
       const done = [];
       document.querySelectorAll('tr').forEach((tr) => {
-        const tds = tr.querySelectorAll('td'); if (tds.length < 4) return;
-        const code = (tds[0].innerText || '').trim(); if (!/^\d+$/.test(code) || !(code in byCode)) return;
-        const inp = tds[3].querySelector('input') || tr.querySelectorAll('input')[1];
-        if (inp) { inp.value = String(byCode[code]); inp.dispatchEvent(new Event('input', { bubbles: true })); inp.dispatchEvent(new Event('change', { bubbles: true })); done.push(`${code}:${byCode[code]}`); }
+        const tds = tr.querySelectorAll('td'); if (!tds.length) return;
+        const code = (tds[0].innerText || '').trim(); if (!(code in w)) return;
+        const q = tr.querySelector('input[id$="TXT_QTY"]');
+        if (q) { q.value = String(w[code]); q.dispatchEvent(new Event('input', { bubbles: true })); q.dispatchEvent(new Event('change', { bubbles: true })); q.dispatchEvent(new Event('blur', { bubbles: true })); done.push(code + ':' + w[code]); }
       });
       return done;
-    }, lines);
-    log(`Filled ${filled.length} lines:`, JSON.stringify(filled));
-    await page.waitForTimeout(800);
-    await page.screenshot({ path: 'order-filled.png', fullPage: true }).catch(() => {});
+    }, want);
 
-    if (PLACE_MODE === 'dryrun') { log('DRYRUN — filled only. Nothing reviewed or submitted.'); await browser.close(); return; }
+    let filled = await fillGrid();
+    D('Filled in grid:', JSON.stringify(filled));
 
-    // Review Order (navigates to the review page; does NOT finalize)
-    await Promise.all([
-      page.waitForLoadState('domcontentloaded').catch(() => {}),
-      (async () => {
-        try { await page.getByRole('link', { name: /review order/i }).first().click({ timeout: 8000 }); }
-        catch { await page.locator('[id*="REVIEW"]').first().click().catch(() => {}); }
-      })(),
-    ]);
-    await page.waitForTimeout(1800);
-    await page.screenshot({ path: 'order-review.png', fullPage: true }).catch(() => {});
-    log('Reached Review page (screenshot saved).');
-
-    if (PLACE_MODE !== 'submit') { log('REVIEW mode — HOLDING before final submit. Nothing was submitted.'); await browser.close(); return; }
-
-    // Final submit — ONLY in submit mode. The review page has a desktop
-    // "Submit Order" (id ends PB_SAVE3) AND a hidden mobile variant (…PB_SAVE3_mbl);
-    // target the desktop one specifically so we don't click a hidden element that
-    // never actually submits.
-    let clicked = false;
-    try { await page.locator('[id$="PB_SAVE3"]').first().click({ timeout: 8000 }); clicked = true; }
-    catch {
-      try { await page.getByRole('link', { name: /submit order/i }).first().click({ timeout: 5000 }); clicked = true; }
-      catch { await page.locator('[id*="SUBMIT"],[id*="CONFIRM"]').first().click().catch(() => {}); }
+    // ---- Add any desired items NOT already in the grid via "Other Products" ----
+    const presentCodes = await page.evaluate(() => {
+      const s = [];
+      document.querySelectorAll('tr').forEach((tr) => { const c = (tr.querySelector('td') || {}).innerText; if (c && /^\d{3,}$/.test(c.trim())) s.push(c.trim()); });
+      return s;
+    });
+    let missing = Object.keys(want).filter((c) => !presentCodes.includes(c));
+    if (missing.length) {
+      D('Not in grid — adding via Other Products:', JSON.stringify(missing));
+      await page.locator('#PB_ADD_PRODUCTS').first().click().catch(() => {});
+      await page.waitForTimeout(1500);
+      let cats = await page.$$eval('#_ctl0_ContentPlaceHolder1_CB_CATEGORY option', (os) => os.map((o) => o.value).filter((v) => v && v !== '0')).catch(() => []);
+      for (const cv of cats) {
+        if (!missing.length) break;
+        await page.selectOption('#_ctl0_ContentPlaceHolder1_CB_CATEGORY', cv).catch(() => {});
+        await page.waitForTimeout(1600);
+        const addedNow = await page.evaluate((w) => {
+          const done = [];
+          document.querySelectorAll('tr').forEach((tr) => {
+            const tds = tr.querySelectorAll('td'); if (!tds.length) return;
+            const code = (tds[0].innerText || '').trim(); if (!(code in w)) return;
+            const q = tr.querySelector('input[id$="TXT_QTY"]');
+            if (q) { q.value = String(w[code]); q.dispatchEvent(new Event('input', { bubbles: true })); q.dispatchEvent(new Event('change', { bubbles: true })); q.dispatchEvent(new Event('blur', { bubbles: true })); done.push(code); }
+          });
+          return done;
+        }, want);
+        if (addedNow.length) {
+          await page.locator('#_ctl0_ContentPlaceHolder1_PB_SAVE').first().click().catch(() => {}); // "Add to Order"
+          await page.waitForURL('**/FBWSOpenOrder.aspx', { timeout: 15000 }).catch(() => {});
+          await page.waitForTimeout(1500);
+          missing = missing.filter((c) => !addedNow.includes(c));
+          D('Added via category', cv, ':', JSON.stringify(addedNow), '· remaining missing:', JSON.stringify(missing));
+        }
+      }
+      await page.waitForTimeout(500);
+      filled = await fillGrid();
+      D('Re-filled grid after adds:', JSON.stringify(filled));
     }
-    // Verify we actually reached the "Order Saved" confirmation — otherwise the
-    // order was NOT really placed (this was the silent failure before).
+
+    await page.screenshot({ path: 'order-filled.png', fullPage: true }).catch(() => {});
+    if (PLACE_MODE === 'dryrun') { D('DRYRUN — filled only. Nothing submitted.'); await browser.close(); return; }
+
+    // ---- Review Order (it is a <span> #reviewBtn, NOT a link/button) ----
+    await page.locator('#_ctl0_ContentPlaceHolder1_reviewBtn').click({ timeout: 10000 })
+      .catch(async () => { await page.locator('span:has-text("Review Order")').first().click().catch(() => {}); });
+    await page.waitForTimeout(2500);
+    await page.screenshot({ path: 'order-review.png', fullPage: true }).catch(() => {});
+    D('Clicked Review.');
+
+    if (PLACE_MODE !== 'submit') { D('REVIEW mode — holding before final submit.'); await browser.close(); return; }
+
+    // ---- Submit (new) or Update (existing) — whichever button Review revealed ----
+    const submitId = await page.evaluate(() => {
+      for (const id of ['_ctl0_ContentPlaceHolder1_PB_SAVE3', '_ctl0_ContentPlaceHolder1_PB_UPDATE3']) {
+        const e = document.getElementById(id);
+        if (e && getComputedStyle(e).display !== 'none' && e.getBoundingClientRect().width > 0) return id;
+      }
+      return null;
+    });
+    if (!submitId) { D('WARNING: no visible Submit/Update after Review — NOT submitted.'); await page.screenshot({ path: 'order-nosubmit.png', fullPage: true }).catch(() => {}); await browser.close(); return; }
+    await page.locator('#' + submitId).click().catch(() => {});
     await page.waitForURL('**/FBWSConfirmOrder.aspx', { timeout: 15000 }).catch(() => {});
     await page.waitForTimeout(1200);
     await page.screenshot({ path: 'order-submitted.png', fullPage: true }).catch(() => {});
     const html = await page.content().catch(() => '');
-    const confirmed = /FBWSConfirmOrder\.aspx/.test(page.url()) || /Order Saved|Thank you for your order/i.test(html);
-    if (confirmed) log('SUBMITTED order for', iso, '— confirmation page reached (Order Saved).');
-    else log('WARNING: clicked Submit but did NOT reach the Order Saved page for', iso, '· clicked=' + clicked + ' · url=' + page.url());
+    const ok = /FBWSConfirmOrder/.test(page.url()) || /Order Saved|changes made to your order|Thank you for your order/i.test(html);
+    if (ok) D(`SUBMITTED ${editing ? 'UPDATE' : 'NEW'} order for ${iso} via ${submitId} — confirmation reached (Order Saved).`);
+    else D(`WARNING: clicked ${submitId} but did NOT reach confirmation for ${iso}. url=${page.url()}`);
   } finally {
     await browser.close();
   }
 };
-
 // Warm the edge cache each morning so the dashboard opens instantly (the heavy
 // reorder + stockout queries are precomputed and cached ~20h). No Alon/Clover
 // login needed — just HTTP GETs against the backend.
