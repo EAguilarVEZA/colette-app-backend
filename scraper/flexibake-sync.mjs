@@ -76,7 +76,7 @@ const run = async () => {
       for (let i = 0; i < 3; i++) {
         try {
           await page.goto(`${BASE}/FBWSOrders.aspx`, { waitUntil: 'domcontentloaded', timeout: 30000 });
-          await page.getByText('This Month', { exact: false }).first().click().catch(() => {});
+          // Default view lists ALL open orders (incl. future delivery dates); don't narrow it.
           await page.waitForLoadState('domcontentloaded').catch(() => {});
           await page.waitForTimeout(1000);
           return;
@@ -98,7 +98,8 @@ const run = async () => {
       const cells = await r.locator('td').allInnerTexts();
       const orderNo = (cells[0] || '').trim();
       const deliveryDate = (cells[2] || '').trim();
-      if (orderNo && deliveryDate) allOrders.push({ orderNo, deliveryDate });
+      const status = (cells[3] || '').trim();
+      if (orderNo && deliveryDate && !/void/i.test(status)) allOrders.push({ orderNo, deliveryDate });
     }
     log(`Found ${allOrders.length} order(s):`, allOrders.map((o) => `${o.orderNo}@${o.deliveryDate}`).join(', ') || 'none');
 
@@ -186,6 +187,26 @@ const run = async () => {
         log(`Saved Alon order for ${iso} → dashboard (${lns.length} items).`);
       } catch (e) { log('Could not save Alon order for', iso, String(e)); }
     }
+
+    // Reconcile DELETIONS: clear any stored future date that no longer has an
+    // open order on Alon (so deleting/voiding an order on Alon removes it here).
+    try {
+      const openIso = new Set(allOrders.map((o) => toISO(o.deliveryDate)));
+      const todayIsoStr = new Date().toISOString().slice(0, 10);
+      const windowEnd = Date.now() + 45 * 86400000;
+      const dd = await fetch(`${BACKEND}/api/ops?action=alon-order-dates`).then((x) => x.json()).catch(() => ({}));
+      for (const rec of (dd.dates || [])) {
+        const d = rec.date;
+        const dMs = new Date(d + 'T12:00:00').getTime();
+        if (d >= todayIsoStr && dMs <= windowEnd && !openIso.has(d) && (rec.count || 0) > 0) {
+          await fetch(`${BACKEND}/api/ops?action=alon-order-save`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json', 'x-colette-secret': SECRET },
+            body: JSON.stringify({ date: d, lines: [], source: 'alon' }),
+          });
+          log(`Reconciled: cleared ${d} — no open order on Alon anymore.`);
+        }
+      }
+    } catch (e) { log('Reconcile deletions failed:', String(e).slice(0, 120)); }
 
     // Save the full Alon product catalog (union of every product seen) so the
     // dashboard can offer the ENTIRE list to order, not just curated items.
