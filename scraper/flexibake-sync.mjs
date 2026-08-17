@@ -431,6 +431,95 @@ const placeOrder = async () => {
     await browser.close();
   }
 };
+// ---- Cancel/void the Alon order for a delivery date (empty it → FlexiBake voids it) ----
+const voidOrder = async () => {
+  const browser = await chromium.launch();
+  const page = await browser.newPage();
+  const D = (...a) => log('[void]', ...a);
+  try {
+    await page.goto(`${BASE}/FBWSLogon.aspx`, { waitUntil: 'networkidle' });
+    await page.locator('input:not([type="password"]):not([type="hidden"]):not([type="submit"]):not([type="button"])').first().fill(USER);
+    await page.locator('input[type="password"]').first().fill(PASS);
+    await Promise.all([
+      page.waitForLoadState('networkidle').catch(() => {}),
+      page.locator('[id$="PB_EXIST_LOGON"]').first().click({ timeout: 15000 })
+        .catch(async () => { await page.getByRole('link', { name: 'Login', exact: true }).first().click(); }),
+    ]);
+    await page.waitForLoadState('domcontentloaded').catch(() => {});
+    await page.waitForTimeout(1500);
+
+    const target = placeTarget();
+    const iso = `${target.getFullYear()}-${String(target.getMonth() + 1).padStart(2, '0')}-${String(target.getDate()).padStart(2, '0')}`;
+    const mdy = `${target.getMonth() + 1}/${target.getDate()}/${target.getFullYear()}`;
+    D('Cancel target:', iso, `(${mdy})`);
+
+    const clearStore = async () => {
+      try {
+        await fetch(`${BACKEND}/api/ops?action=alon-order-save`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'x-colette-secret': SECRET },
+          body: JSON.stringify({ date: iso, lines: [], source: 'alon' }),
+        });
+      } catch { /* best effort */ }
+    };
+
+    await page.goto(`${BASE}/FBWSOrders.aspx`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.waitForTimeout(1500);
+    const opened = await page.evaluate((mdyDate) => {
+      for (const tr of document.querySelectorAll('tr')) {
+        const t = (tr.innerText || '').replace(/\s+/g, ' ');
+        if (t.includes(mdyDate) && /open/i.test(t)) {
+          const v = [...tr.querySelectorAll('a')].find((a) => /view/i.test(a.innerText || ''));
+          if (v) { v.click(); return true; }
+        }
+      }
+      return false;
+    }, mdy);
+    if (!opened) { D('No open order for', mdy, '— nothing to cancel; clearing store.'); await clearStore(); await browser.close(); return; }
+
+    await page.waitForURL('**/FBWSOpenOrder.aspx', { timeout: 20000 }).catch(() => {});
+    await page.waitForFunction(
+      () => [...document.querySelectorAll('td')].some((td) => /^\d{3,}$/.test((td.innerText || '').trim())),
+      { timeout: 20000 },
+    ).catch(() => {});
+    await page.waitForTimeout(1500);
+
+    if (PLACE_MODE === 'dryrun') { D('DRYRUN — opened order, not cancelling.'); await browser.close(); return; }
+
+    // Click the "Cancel Order" button (id ...cancel_order), then confirm "Yes".
+    const cancelClicked = await page.evaluate(() => {
+      const b = document.getElementById('_ctl0_ContentPlaceHolder1_cancel_order');
+      if (b && getComputedStyle(b).display !== 'none') { b.click(); return true; }
+      const alt = [...document.querySelectorAll('a,span,button,input')].find((e) => /cancel order/i.test((e.innerText || e.value || '')) && getComputedStyle(e).display !== 'none');
+      if (alt) { alt.click(); return true; }
+      return false;
+    });
+    if (!cancelClicked) { D('WARNING: could not find Cancel Order button. Not cancelled.'); await page.screenshot({ path: 'order-cancel-nobtn.png', fullPage: true }).catch(() => {}); await browser.close(); return; }
+    await page.waitForTimeout(1500);
+    // Confirm "Are you sure…" → click any visible "Yes" (PB_SAVE4), up to twice.
+    for (let i = 0; i < 2; i++) {
+      if (/FBWSConfirmOrder/.test(page.url())) break;
+      const clicked = await page.evaluate(() => {
+        const y = document.getElementById('_ctl0_ContentPlaceHolder1_PB_SAVE4');
+        if (y && getComputedStyle(y).display !== 'none' && y.getBoundingClientRect().width > 0) { y.click(); return true; }
+        const alt = [...document.querySelectorAll('a,button,input')].find((e) => /^\s*yes\s*$/i.test((e.innerText || e.value || '')) && getComputedStyle(e).display !== 'none' && e.getBoundingClientRect().width > 0);
+        if (alt) { alt.click(); return true; }
+        return false;
+      });
+      await page.waitForTimeout(1800);
+      if (!clicked) break;
+    }
+    await page.waitForURL('**/FBWSConfirmOrder.aspx', { timeout: 15000 }).catch(() => {});
+    await page.waitForTimeout(1000);
+    await page.screenshot({ path: 'order-voided.png', fullPage: true }).catch(() => {});
+    const html = await page.content().catch(() => '');
+    const ok = /FBWSConfirmOrder/.test(page.url()) || /Order Saved|cancel|changes made/i.test(html);
+    await clearStore();
+    D(ok ? `CANCELLED order for ${iso} via Cancel Order button; store cleared.` : `WARNING: cancel for ${iso} did not confirm. url=${page.url()}`);
+  } finally {
+    await browser.close();
+  }
+};
+
 // Warm the edge cache each morning so the dashboard opens instantly (the heavy
 // reorder + stockout queries are precomputed and cached ~20h). No Alon/Clover
 // login needed — just HTTP GETs against the backend.
@@ -516,6 +605,7 @@ const main = process.env.TASK === 'catalog' ? harvestCatalog
   : process.env.TASK === 'reset' ? resetZero
   : process.env.TASK === 'setcosts' ? setCosts
   : process.env.TASK === 'place' ? placeOrder
+  : process.env.TASK === 'void' ? voidOrder
   : process.env.TASK === 'warm' ? warm
   : run;
 main().catch((e) => { console.error(e); process.exit(1); });
