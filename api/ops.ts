@@ -198,6 +198,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         res.setHeader('Cache-Control', 's-maxage=120, stale-while-revalidate=600');
         return res.status(200).json({ ok: true, ...(await salesBreakdown(startMs, endMs)) });
       }
+      case 'daypart': {
+        if (req.method !== 'GET') return fail(res, 405, 'Use GET');
+        if (!requireAuth()) return; // financial data — admin only
+        const startMs = Number(req.query.start) || (Date.now() - 30 * 86400000);
+        const endMs = Number(req.query.end) || Date.now();
+        const withItems = req.query.items === '1' || req.query.items === 'true';
+        res.setHeader('Cache-Control', 's-maxage=600, stale-while-revalidate=86400');
+        return res.status(200).json({ ok: true, ...(await daypartAnalysis(startMs, endMs, withItems)) });
+      }
       case 'notify-customer': {
         if (req.method !== 'POST') return fail(res, 405, 'Use POST');
         if (!requireAuth()) return;
@@ -491,4 +500,63 @@ async function salesBreakdown(startMs: number, endMs: number) {
     discountTotal: discountArr.reduce((s, d) => s + d.amount, 0),
     refunds: refunds.slice(0, 100),
   };
+}
+
+// ---- Daypart analysis (hour-of-day / day-of-week / item velocity, Eastern Time) ----
+async function daypartAnalysis(startMs: number, endMs: number, withItems: boolean) {
+  const fStart = encodeURIComponent(`createdTime>=${startMs}`);
+  const fEnd = encodeURIComponent(`createdTime<=${endMs}`);
+  const expand = withItems ? 'lineItems' : '';
+  const fmt = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour12: false, weekday: 'short', hour: '2-digit' });
+  const dowIdx: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  const byHour = Array.from({ length: 24 }, () => ({ orders: 0, net: 0 }));
+  const byDow = Array.from({ length: 7 }, () => ({ orders: 0, net: 0 }));
+  const byHourDow = Array.from({ length: 7 }, () => Array.from({ length: 24 }, () => ({ orders: 0, net: 0 })));
+  const items = new Map<string, { qty: number; revenue: number; byHourQty: number[] }>();
+  let orders = 0, net = 0;
+  let offset = 0; const pageSize = 1000, maxOrders = 60000; let fetched = 0;
+  while (fetched < maxOrders) {
+    const path = `/orders?${expand ? `expand=${expand}&` : ''}filter=${fStart}&filter=${fEnd}&limit=${pageSize}&offset=${offset}`;
+    const data = await cloverGet(path);
+    const os: any[] = data?.elements || [];
+    if (!os.length) break;
+    for (const o of os) {
+      const t = o.createdTime || o.clientCreatedTime || o.modifiedTime;
+      if (!t) continue;
+      let hh = 0, dd = 0;
+      for (const p of fmt.formatToParts(new Date(t))) {
+        if (p.type === 'hour') hh = parseInt(p.value, 10) % 24;
+        else if (p.type === 'weekday') dd = dowIdx[p.value] ?? 0;
+      }
+      const amt = (o.total || 0) / 100;
+      orders++; net += amt;
+      byHour[hh].orders++; byHour[hh].net += amt;
+      byDow[dd].orders++; byDow[dd].net += amt;
+      byHourDow[dd][hh].orders++; byHourDow[dd][hh].net += amt;
+      if (withItems) {
+        for (const li of (o.lineItems?.elements || [])) {
+          const name = li.name || '(unnamed)';
+          const price = (li.price || 0) / 100;
+          const it = items.get(name) || { qty: 0, revenue: 0, byHourQty: Array(24).fill(0) };
+          it.qty += 1; it.revenue += price; it.byHourQty[hh] += 1;
+          items.set(name, it);
+        }
+      }
+    }
+    fetched += os.length; offset += pageSize;
+    if (os.length < pageSize) break;
+  }
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+  const result: any = {
+    range: { start: startMs, end: endMs }, orders, net: r2(net),
+    byHour: byHour.map((h, i) => ({ hour: i, orders: h.orders, net: r2(h.net) })),
+    byDow: byDow.map((d, i) => ({ dow: i, orders: d.orders, net: r2(d.net) })),
+    byHourDow: byHourDow.map((row) => row.map((c) => ({ orders: c.orders, net: r2(c.net) }))),
+  };
+  if (withItems) {
+    result.items = [...items.entries()]
+      .map(([name, v]) => ({ name, qty: v.qty, revenue: r2(v.revenue), byHourQty: v.byHourQty }))
+      .sort((a, b) => b.qty - a.qty).slice(0, 250);
+  }
+  return result;
 }
