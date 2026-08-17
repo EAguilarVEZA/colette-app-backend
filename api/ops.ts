@@ -97,7 +97,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (req.method !== 'POST') return fail(res, 405, 'Use POST');
         if (!requireAuth()) return;
         const task = String(body?.task || 'sync').toLowerCase();
-        if (!['sync', 'reset', 'setcosts'].includes(task)) return fail(res, 400, 'task must be sync | reset | setcosts');
+        if (!['sync', 'reset', 'setcosts', 'void'].includes(task)) return fail(res, 400, 'task must be sync | reset | setcosts | void');
         const token = process.env.GH_DISPATCH_TOKEN;
         const repo = process.env.GH_REPO || 'EAguilarVEZA/colette-app-backend';
         if (!token) {
