@@ -207,6 +207,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         res.setHeader('Cache-Control', 's-maxage=600, stale-while-revalidate=86400');
         return res.status(200).json({ ok: true, ...(await daypartAnalysis(startMs, endMs, withItems)) });
       }
+      case 'payments': {
+        // Reads Clover /payments (includes charges NOT attached to an order —
+        // manual/virtual-terminal sales) so we can reconcile against order-based totals.
+        if (req.method !== 'GET') return fail(res, 405, 'Use GET');
+        if (!requireAuth()) return; // financial data — admin only
+        const startMs = Number(req.query.start) || (Date.now() - 86400000);
+        const endMs = Number(req.query.end) || Date.now();
+        res.setHeader('Cache-Control', 's-maxage=120, stale-while-revalidate=600');
+        return res.status(200).json({ ok: true, ...(await paymentsSummary(startMs, endMs)) });
+      }
       case 'notify-customer': {
         if (req.method !== 'POST') return fail(res, 405, 'Use POST');
         if (!requireAuth()) return;
@@ -559,4 +569,45 @@ async function daypartAnalysis(startMs: number, endMs: number, withItems: boolea
       .sort((a, b) => b.qty - a.qty).slice(0, 250);
   }
   return result;
+}
+
+// ---- Clover payments reconciliation (catches charges with no order) ----
+async function paymentsSummary(startMs: number, endMs: number) {
+  const fStart = encodeURIComponent(`createdTime>=${startMs}`);
+  const fEnd = encodeURIComponent(`createdTime<=${endMs}`);
+  const fmt = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour12: false, hour: '2-digit' });
+  const byHour = Array.from({ length: 24 }, () => ({ count: 0, amount: 0 }));
+  let total = 0, tips = 0, count = 0, orderlessTotal = 0, orderlessCount = 0;
+  const orderless: { amount: number; time: number; tender: string; result: string }[] = [];
+  const tenders = new Map<string, { count: number; amount: number }>();
+  let offset = 0; const pageSize = 1000, maxP = 20000; let fetched = 0;
+  while (fetched < maxP) {
+    const data = await cloverGet(`/payments?expand=order,tender&filter=${fStart}&filter=${fEnd}&limit=${pageSize}&offset=${offset}`);
+    const ps: any[] = data?.elements || [];
+    if (!ps.length) break;
+    for (const p of ps) {
+      // Skip fully-voided/declined payments (they don't settle).
+      const result = p.result || '';
+      if (/VOIDED|FAILED|DECLINED/i.test(result)) continue;
+      const amt = (p.amount || 0) / 100;
+      const tip = (p.tipAmount || 0) / 100;
+      total += amt; tips += tip; count++;
+      const label = p.tender?.label || p.tender?.labelKey || 'Other';
+      const tt = tenders.get(label) || { count: 0, amount: 0 }; tt.count++; tt.amount += amt; tenders.set(label, tt);
+      const t = p.createdTime || p.clientCreatedTime || 0;
+      if (t) { let hh = 0; for (const pt of fmt.formatToParts(new Date(t))) if (pt.type === 'hour') hh = parseInt(pt.value, 10) % 24; byHour[hh].count++; byHour[hh].amount += amt; }
+      if (!p.order || !p.order.id) { orderlessTotal += amt; orderlessCount++; orderless.push({ amount: Math.round(amt * 100) / 100, time: t, tender: label, result }); }
+    }
+    fetched += ps.length; offset += pageSize;
+    if (ps.length < pageSize) break;
+  }
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+  orderless.sort((a, b) => b.amount - a.amount);
+  return {
+    range: { start: startMs, end: endMs },
+    paymentsCount: count, paymentsTotal: r2(total), tips: r2(tips),
+    orderlessTotal: r2(orderlessTotal), orderlessCount, orderless: orderless.slice(0, 50),
+    tenders: [...tenders.entries()].map(([label, v]) => ({ label, count: v.count, amount: r2(v.amount) })).sort((a, b) => b.amount - a.amount),
+    byHour: byHour.map((h, i) => ({ hour: i, count: h.count, amount: r2(h.amount) })).filter((h) => h.count > 0),
+  };
 }
