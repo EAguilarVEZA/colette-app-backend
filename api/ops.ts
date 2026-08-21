@@ -217,6 +217,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         res.setHeader('Cache-Control', 's-maxage=120, stale-while-revalidate=600');
         return res.status(200).json({ ok: true, ...(await paymentsSummary(startMs, endMs)) });
       }
+      case 'prep-board': {
+        // Staff prep-task completion board. Returns { "YYYY-MM-DD|taskId": {employee, at} }.
+        if (req.method !== 'GET') return fail(res, 405, 'Use GET');
+        res.setHeader('Cache-Control', 'no-store');
+        return res.status(200).json({ ok: true, tasks: await getPrepTasks() });
+      }
+      case 'prep-complete': {
+        // Toggle a prep task done/undone. Identifies the employee by PIN.
+        if (req.method !== 'POST') return fail(res, 405, 'Use POST');
+        const pin = String(body?.pin || '');
+        const taskId = String(body?.taskId || '');
+        const date = String(body?.date || '');
+        const done = body?.done !== false; // default true
+        if (!taskId || !date) return fail(res, 400, 'taskId and date required');
+        const name = await employeeForPinAsync(pin);
+        if (!name) return fail(res, 401, 'PIN not recognized');
+        const tasks = await setPrepTask(date, taskId, done, name);
+        return res.status(200).json({ ok: true, employee: name, tasks });
+      }
       case 'notify-customer': {
         if (req.method !== 'POST') return fail(res, 405, 'Use POST');
         if (!requireAuth()) return;
@@ -610,4 +629,34 @@ async function paymentsSummary(startMs: number, endMs: number) {
     tenders: [...tenders.entries()].map(([label, v]) => ({ label, count: v.count, amount: r2(v.amount) })).sort((a, b) => b.amount - a.amount),
     byHour: byHour.map((h, i) => ({ hour: i, count: h.count, amount: r2(h.amount) })).filter((h) => h.count > 0),
   };
+}
+
+// ---- Prep task board store (Upstash KV REST; same store used by the rest of the app) ----
+async function kvCmd(cmd: (string | number)[]): Promise<{ ok: boolean; result?: any }> {
+  const url = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (!url || !token) return { ok: false };
+  try {
+    const r = await fetch(url, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(cmd) });
+    const out: any = await r.json().catch(() => ({}));
+    return { ok: r.ok, result: out?.result ?? null };
+  } catch { return { ok: false }; }
+}
+const PREPTASK_KEY = 'colette:prep_tasks';
+type PrepMap = Record<string, { employee: string; at: number }>;
+async function getPrepTasks(): Promise<PrepMap> {
+  const r = await kvCmd(['GET', PREPTASK_KEY]);
+  if (r.ok && r.result) { try { return JSON.parse(r.result); } catch { return {}; } }
+  return {};
+}
+async function setPrepTask(date: string, taskId: string, done: boolean, name: string): Promise<PrepMap> {
+  const map = await getPrepTasks();
+  const key = date + '|' + taskId;
+  if (done) map[key] = { employee: name, at: Date.now() };
+  else delete map[key];
+  // prune anything older than ~70 days so the store stays small
+  const cutoff = Date.now() - 70 * 86400000;
+  for (const k of Object.keys(map)) { const v = map[k]; if (v && v.at && v.at < cutoff) delete map[k]; }
+  await kvCmd(['SET', PREPTASK_KEY, JSON.stringify(map)]);
+  return map;
 }
