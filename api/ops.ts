@@ -642,11 +642,24 @@ async function kvCmd(cmd: (string | number)[]): Promise<{ ok: boolean; result?: 
     return { ok: r.ok, result: out?.result ?? null };
   } catch { return { ok: false }; }
 }
+// TCP/TLS Redis fallback (prod uses "Official Redis for Vercel" via REDIS_URL).
+let _opsRedis: any = null;
+async function opsRedis(): Promise<any> {
+  const url = process.env.KV_REDIS_URL || process.env.REDIS_URL || process.env.KV_URL || process.env.REDIS_TLS_URL;
+  if (!url) return null;
+  if (!_opsRedis) {
+    // @ts-ignore — ioredis is installed on Vercel (not in local typecheck)
+    try { const mod: any = await import('ioredis'); const Redis = mod.default || mod; _opsRedis = new Redis(url, { maxRetriesPerRequest: 2, enableReadyCheck: false }); }
+    catch { _opsRedis = null; }
+  }
+  return _opsRedis;
+}
 const PREPTASK_KEY = 'colette:prep_tasks';
 type PrepMap = Record<string, { employee: string; at: number }>;
 async function getPrepTasks(): Promise<PrepMap> {
   const r = await kvCmd(['GET', PREPTASK_KEY]);
   if (r.ok && r.result) { try { return JSON.parse(r.result); } catch { return {}; } }
+  const c = await opsRedis(); if (c) { try { const v = await c.get(PREPTASK_KEY); return v ? JSON.parse(v) : {}; } catch { return {}; } }
   return {};
 }
 async function setPrepTask(date: string, taskId: string, done: boolean, name: string): Promise<PrepMap> {
@@ -657,6 +670,8 @@ async function setPrepTask(date: string, taskId: string, done: boolean, name: st
   // prune anything older than ~70 days so the store stays small
   const cutoff = Date.now() - 70 * 86400000;
   for (const k of Object.keys(map)) { const v = map[k]; if (v && v.at && v.at < cutoff) delete map[k]; }
-  await kvCmd(['SET', PREPTASK_KEY, JSON.stringify(map)]);
+  const s = JSON.stringify(map);
+  const r = await kvCmd(['SET', PREPTASK_KEY, s]);
+  if (!r.ok) { const c = await opsRedis(); if (c) { try { await c.set(PREPTASK_KEY, s); } catch { /* best effort */ } } }
   return map;
 }
