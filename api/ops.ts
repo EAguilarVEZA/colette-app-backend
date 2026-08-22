@@ -137,6 +137,54 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (!put.ok) return fail(res, 502, 'Commit failed', pj?.message || pj);
         return res.status(200).json({ ok: true, repo, path, commit: pj?.commit?.sha || null });
       }
+      case 'commit-files': {
+        // Batch self-deploy: commit MANY files in ONE GitHub commit via the Git Data API
+        // (blob/tree/commit/ref). Lets the whole /v2 site deploy in a single round-trip.
+        // Body: { repo:'website'|'backend', files:[{path, content, encoding?:'utf8'|'base64'}], message }
+        if (req.method !== 'POST') return fail(res, 405, 'Use POST');
+        if (!requireAuth()) return;
+        const token = process.env.GH_COMMIT_TOKEN || process.env.GH_DISPATCH_TOKEN;
+        if (!token) return fail(res, 503, 'GH_COMMIT_TOKEN not set in Vercel');
+        const repos: Record<string, string> = { website: 'EAguilarVEZA/colette-website', backend: 'EAguilarVEZA/colette-app-backend' };
+        const repo = repos[String(body?.repo || '')];
+        if (!repo) return fail(res, 400, 'repo must be "website" or "backend"');
+        const files: any[] = Array.isArray(body?.files) ? body.files : [];
+        if (!files.length) return fail(res, 400, 'files[] required');
+        if (files.length > 400) return fail(res, 400, 'too many files (max 400)');
+        const message = String(body?.message || (`Batch update ${files.length} files`));
+        const base = `https://api.github.com/repos/${repo}/git`;
+        const H: Record<string, string> = { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'User-Agent': 'colette-deployer', 'Content-Type': 'application/json' };
+        const gh = async (url: string, method = 'GET', payload?: any) => {
+          const r = await fetch(url, { method, headers: H, ...(payload ? { body: JSON.stringify(payload) } : {}) });
+          const j: any = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(`${method} ${url.replace(base, '')} -> ${r.status} ${j?.message || ''}`);
+          return j;
+        };
+        try {
+          // 1) current head + base tree
+          const ref: any = await gh(`${base}/refs/heads/main`);
+          const headSha = ref?.object?.sha;
+          const headCommit: any = await gh(`${base}/commits/${headSha}`);
+          const baseTree = headCommit?.tree?.sha;
+          // 2) create blobs (base64-safe for both text and binary) and build tree entries
+          const tree: any[] = [];
+          for (const f of files) {
+            const p = String(f?.path || '').replace(/^\/+/, '');
+            if (!p) continue;
+            const enc = f?.encoding === 'base64' ? 'base64' : 'utf8';
+            const b64 = enc === 'base64' ? String(f.content || '') : Buffer.from(String(f?.content ?? ''), 'utf8').toString('base64');
+            const blob: any = await gh(`${base}/blobs`, 'POST', { content: b64, encoding: 'base64' });
+            tree.push({ path: p, mode: '100644', type: 'blob', sha: blob.sha });
+          }
+          // 3) tree -> commit -> move ref
+          const newTree: any = await gh(`${base}/trees`, 'POST', { base_tree: baseTree, tree });
+          const commit: any = await gh(`${base}/commits`, 'POST', { message, tree: newTree.sha, parents: [headSha] });
+          await gh(`${base}/refs/heads/main`, 'PATCH', { sha: commit.sha, force: false });
+          return res.status(200).json({ ok: true, repo, count: tree.length, commit: commit.sha });
+        } catch (e: any) {
+          return fail(res, 502, 'Batch commit failed', String(e?.message || e));
+        }
+      }
       case 'alon-catalog-get': {
         // Full Alon product list for the dashboard order table.
         if (req.method !== 'GET') return fail(res, 405, 'Use GET');
