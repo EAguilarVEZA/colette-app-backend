@@ -13,6 +13,7 @@ import {
   togglePunch, clockStatus, listPunches,
   getShifts, saveShifts, listTimeOff, addTimeOff, resolveTimeOff,
   getAlonOrders, saveAlonOrder, getAlonCatalog, saveAlonCatalog,
+  getMenu,
 } from '../lib/clover.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -183,6 +184,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           return res.status(200).json({ ok: true, repo, count: tree.length, commit: commit.sha });
         } catch (e: any) {
           return fail(res, 502, 'Batch commit failed', String(e?.message || e));
+        }
+      }
+      case 'catalog': {
+        // Public read of the live Clover menu (name + price + category), for the
+        // website to match retail prices to items (e.g. croissants).
+        try {
+          const m = await getMenu();
+          const items = (m.items || []).map((i: any) => ({ name: i.name, price: i.price, category: i.category }));
+          return res.status(200).json({ ok: true, count: items.length, categories: m.categories || [], items });
+        } catch (e: any) {
+          return fail(res, 502, 'Catalog read failed', String(e?.message || e));
         }
       }
       case 'alon-catalog-get': {
