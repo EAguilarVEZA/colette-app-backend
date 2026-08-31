@@ -197,6 +197,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           return fail(res, 502, 'Catalog read failed', String(e?.message || e));
         }
       }
+      case 'owner-set-pass': {
+        if (req.method !== 'POST') return fail(res, 405, 'Use POST');
+        if (!requireAuth()) return;
+        const p = String(body?.pass || '').trim();
+        if (p.length < 4) return fail(res, 400, 'Password must be at least 4 characters');
+        const ok = await setOwnerPass(p);
+        return res.status(ok ? 200 : 502).json({ ok });
+      }
       case 'alon-catalog-get': {
         // Full Alon product list for the dashboard order table.
         if (req.method !== 'GET') return fail(res, 405, 'Use GET');
@@ -378,7 +386,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const pw = String(body?.adminPassword || '');
         if (id || pw) {
           const ADMIN_ID = process.env.ADMIN_ID, ADMIN_PW = process.env.ADMIN_PASSWORD;
-          if (ADMIN_ID && ADMIN_PW && id === ADMIN_ID && pw === ADMIN_PW) {
+          const storedOwnerPw = await getOwnerPass();
+          const idOk = ADMIN_ID ? (id.toLowerCase() === ADMIN_ID.toLowerCase()) : false;
+          const pwOk = (ADMIN_PW && pw === ADMIN_PW) || (storedOwnerPw && pw === storedOwnerPw);
+          if (idOk && pwOk) {
             return res.status(200).json({ ok: true, role: 'admin', name: id, key: process.env.SYNC_SECRET || '' });
           }
           return fail(res, 401, 'ID or password not recognized');
@@ -715,6 +726,20 @@ async function opsRedis(): Promise<any> {
   return _opsRedis;
 }
 const PREPTASK_KEY = 'colette:prep_tasks';
+const OWNER_PASS_KEY = 'colette:owner_pass';
+async function getOwnerPass(): Promise<string> {
+  const r = await kvCmd(['GET', OWNER_PASS_KEY]);
+  if (r.ok && r.result) return String(r.result);
+  const c = await opsRedis(); if (c) { try { const v = await c.get(OWNER_PASS_KEY); return v ? String(v) : ''; } catch { return ''; } }
+  return '';
+}
+async function setOwnerPass(pass: string): Promise<boolean> {
+  const val = String(pass || '');
+  const r = await kvCmd(['SET', OWNER_PASS_KEY, val]);
+  if (r.ok) return true;
+  const c = await opsRedis(); if (c) { try { await c.set(OWNER_PASS_KEY, val); return true; } catch { return false; } }
+  return false;
+}
 type PrepMap = Record<string, { employee: string; at: number }>;
 async function getPrepTasks(): Promise<PrepMap> {
   const r = await kvCmd(['GET', PREPTASK_KEY]);
