@@ -418,6 +418,54 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (!allowed) return fail(res, 401, 'Not authorized to edit the schedule');
         const shifts = (body?.shifts && typeof body.shifts === 'object') ? body.shifts : null;
         if (!shifts) return fail(res, 400, 'shifts object required');
+
+        // ---- HARD RULE: max total team hours per week (default 130) ----
+        // The cap applies to the SUM of all employees' scheduled hours in a
+        // Mon–Sun week. The owner (admin secret) saving an over-cap week IS the
+        // approval. A scheduler PIN cannot push a week above the cap: nothing
+        // is saved, and Edgar is notified so he can approve by saving as owner.
+        // Lowering the hours of an already-over week is always allowed.
+        const MAX_WEEK_HOURS = Number(process.env.MAX_WEEK_HOURS || 130);
+        const weekTotals = (obj: Record<string, any>) => {
+          const t: Record<string, number> = {};
+          for (const k in obj) {
+            const i = k.indexOf('|'); if (i < 0) continue;
+            const s = obj[k]; if (!s || !s.start || !s.end) continue;
+            const [ah, am] = String(s.start).split(':').map(Number);
+            const [bh, bm] = String(s.end).split(':').map(Number);
+            let mins = (bh * 60 + (bm || 0)) - (ah * 60 + (am || 0));
+            if (!isFinite(mins)) continue; if (mins < 0) mins += 1440;
+            const d = new Date(k.slice(i + 1) + 'T12:00:00Z');
+            if (isNaN(d.getTime())) continue;
+            const g = (d.getUTCDay() + 6) % 7; d.setUTCDate(d.getUTCDate() - g);
+            const wk = d.toISOString().slice(0, 10);
+            t[wk] = (t[wk] || 0) + mins / 60;
+          }
+          return t;
+        };
+        if (!authed) {
+          const newTot = weekTotals(shifts);
+          const oldTot = weekTotals(await getShifts());
+          const over = Object.keys(newTot)
+            .filter((wk) => newTot[wk] > MAX_WEEK_HOURS + 1e-9 && newTot[wk] > (oldTot[wk] || 0) + 1e-9)
+            .sort()
+            .map((wk) => ({ week: wk, hours: Math.round(newTot[wk] * 10) / 10 }));
+          if (over.length) {
+            const who = (body?.pin ? await employeeForPinAsync(String(body.pin)) : null) || 'A scheduler';
+            const desc = over.map((o) => `week of ${o.week}: ${o.hours}h`).join(' · ');
+            try {
+              await notifyOwner({
+                sms: `Colette: ${who} tried to schedule over the ${MAX_WEEK_HOURS}h weekly team cap (${desc}). Nothing was saved — open the Weekly Schedule as owner to approve or adjust.`,
+                emailSubject: `Schedule needs your approval — over the ${MAX_WEEK_HOURS}h cap`,
+                emailHtml: `<p><b>${who}</b> tried to save a schedule over the <b>${MAX_WEEK_HOURS}h</b> weekly team cap.</p>`
+                  + `<p>${desc}</p>`
+                  + `<p>Nothing was saved. To approve, open the Weekly Schedule signed in as owner and save it yourself — or adjust the hours under the cap.</p>`,
+              });
+            } catch { /* best effort */ }
+            return res.status(422).json({ ok: false, needsApproval: true, cap: MAX_WEEK_HOURS, weeks: over,
+              error: `Over the ${MAX_WEEK_HOURS}h weekly team cap (${desc}). Nothing was saved — Edgar has been notified for approval.` });
+          }
+        }
         await saveShifts(shifts);
         return res.status(200).json({ ok: true });
       }
