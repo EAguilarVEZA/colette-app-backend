@@ -774,6 +774,46 @@ export async function salesSummary(opts?: { days?: number; maxOrders?: number })
   };
 }
 
+// ---------- Cash vs card receipts (tender-level, from Clover payments) ----------
+export async function cashSummary(opts: { fromMs: number; toMs: number }) {
+  const { fromMs, toMs } = opts;
+  const etDay = (ms: number) => new Date(ms).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+  const byDay = new Map<string, { cash: number; card: number; other: number }>();
+  let cash = 0, card = 0, other = 0, count = 0, refunded = 0;
+  let offset = 0; const pageSize = 1000;
+  while (true) {
+    const f1 = encodeURIComponent(`createdTime>=${fromMs}`);
+    const f2 = encodeURIComponent(`createdTime<=${toMs}`);
+    const data = await restFetch(`/payments?expand=tender&filter=${f1}&filter=${f2}&limit=${pageSize}&offset=${offset}`);
+    const rows: any[] = data?.elements || [];
+    if (!rows.length) break;
+    for (const p of rows) {
+      if (!p.createdTime) continue;
+      if (p.result && p.result !== 'SUCCESS') continue;
+      const amt = (p.amount || 0) + (p.tipAmount || 0);
+      const label = String(p.tender?.labelKey || p.tender?.label || '').toLowerCase();
+      const d = etDay(p.createdTime);
+      const cur = byDay.get(d) || { cash: 0, card: 0, other: 0 };
+      if (label.includes('cash')) { cash += amt; cur.cash += amt; }
+      else if (label.includes('credit') || label.includes('debit') || label.includes('card')) { card += amt; cur.card += amt; }
+      else { other += amt; cur.other += amt; }
+      byDay.set(d, cur); count++;
+    }
+    offset += pageSize;
+    if (rows.length < pageSize) break;
+  }
+  try {
+    const f1 = encodeURIComponent(`createdTime>=${fromMs}`);
+    const f2 = encodeURIComponent(`createdTime<=${toMs}`);
+    const rd = await restFetch(`/refunds?filter=${f1}&filter=${f2}&limit=1000`);
+    for (const r of (rd?.elements || [])) refunded += r.amount || 0;
+  } catch { /* refunds optional */ }
+  const money = (c: number) => Math.round(c) / 100;
+  const daily = [...byDay.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1))
+    .map(([date, v]) => ({ date, cash: money(v.cash), card: money(v.card), other: money(v.other) }));
+  return { payments: count, cash: money(cash), card: money(card), other: money(other), refunded: money(refunded), daily };
+}
+
 // ---------- Stockout / lost-sales analysis ----------
 // Heuristic from order timestamps: for each product-day, find the last time it sold
 // vs. the store's last sale that day. If a product consistently STOPS selling well
