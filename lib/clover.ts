@@ -814,6 +814,48 @@ export async function cashSummary(opts: { fromMs: number; toMs: number }) {
   return { payments: count, cash: money(cash), card: money(card), other: money(other), refunded: money(refunded), daily };
 }
 
+// ---------- Busy hours: orders & revenue by day-of-week × hour (ET) ----------
+export async function hourlySummary(opts?: { days?: number }) {
+  const days = Math.min(opts?.days ?? 84, 180);
+  const since = Date.now() - days * 86400000;
+  const WD = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const dayFmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' });
+  const wdFmt = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short' });
+  const hrFmt = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', hourCycle: 'h23' });
+  const cell: Record<string, { orders: number; revenue: number }> = {};
+  const datesByDow: Record<number, Set<string>> = {};
+  let offset = 0; const pageSize = 1000; let fetched = 0; const maxOrders = 30000; let total = 0;
+  while (fetched < maxOrders) {
+    const filter = encodeURIComponent(`createdTime>=${since}`);
+    const data = await restFetch(`/orders?filter=${filter}&limit=${pageSize}&offset=${offset}`);
+    const orders: any[] = data?.elements || [];
+    if (!orders.length) break;
+    for (const o of orders) {
+      const t = o.createdTime; if (!t) continue;
+      const d = new Date(t);
+      const dow = WD.indexOf(wdFmt.format(d)); if (dow < 0) continue;
+      const hr = parseInt(hrFmt.format(d), 10); if (isNaN(hr)) continue;
+      const key = dow + '|' + hr;
+      const c = cell[key] || (cell[key] = { orders: 0, revenue: 0 });
+      c.orders += 1; c.revenue += (typeof o.total === 'number' ? o.total : 0);
+      (datesByDow[dow] || (datesByDow[dow] = new Set())).add(dayFmt.format(d));
+      total++;
+    }
+    fetched += orders.length; offset += pageSize;
+    if (orders.length < pageSize) break;
+  }
+  const grid = [] as any[];
+  for (let dow = 0; dow < 7; dow++) {
+    const hours = [] as any[];
+    for (let h = 5; h <= 21; h++) {
+      const c = cell[dow + '|' + h] || { orders: 0, revenue: 0 };
+      hours.push({ hour: h, orders: c.orders, revenue: Math.round(c.revenue) / 100 });
+    }
+    grid.push({ dow: WD[dow], dates: datesByDow[dow] ? datesByDow[dow].size : 0, hours });
+  }
+  return { days, totalOrders: total, grid };
+}
+
 // ---------- Stockout / lost-sales analysis ----------
 // Heuristic from order timestamps: for each product-day, find the last time it sold
 // vs. the store's last sale that day. If a product consistently STOPS selling well

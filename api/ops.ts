@@ -14,7 +14,7 @@ import {
   getShifts, saveShifts, listTimeOff, addTimeOff, resolveTimeOff,
   getAlonOrders, saveAlonOrder, getAlonCatalog, saveAlonCatalog,
   getMenu,
-  cashSummary,
+  cashSummary, hourlySummary,
 } from '../lib/clover.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -246,6 +246,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const source = body?.source === 'alon' ? 'alon' : 'manual';
         const saved = await saveAlonOrder(date, lines, source);
         return res.status(200).json({ ok: true, date, order: saved });
+      }
+      case 'hourly-summary': {
+        // Busy hours: orders & revenue by day-of-week × hour (ET) — admin only.
+        if (req.method !== 'GET') return fail(res, 405, 'Use GET');
+        if (!requireAuth()) return;
+        const days = Math.min(Number(req.query.days) || 84, 180);
+        res.setHeader('Cache-Control', 's-maxage=21600, stale-while-revalidate=86400');
+        return res.status(200).json({ ok: true, ...(await hourlySummary({ days })) });
       }
       case 'cash-summary': {
         // Receipts by tender (cash vs card), per day, for a ms date range — admin only.
