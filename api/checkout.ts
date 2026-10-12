@@ -18,6 +18,7 @@ import {
   createOrder, charge, printOrder, setOrderNote, type CartLine,
   BOGO_CODE, findCustomerWithNote, hasRedeemedBogo, markBogoRedeemed, crepeDiscountForCart,
 } from '../lib/clover.js';
+import { campaignAttributionTag, normalizeCampaignAttribution } from '../lib/campaign-attribution.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (applyCors(req, res)) return;
@@ -41,6 +42,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const orderType = body?.orderType || undefined;
   const customerName = body?.customerName || undefined;
+  const attribution = normalizeCampaignAttribution(body?.attribution);
+  const attributionTag = campaignAttributionTag(attribution);
+  const submittedNote = String(body?.note || '').trim();
+  const orderNote = [submittedNote, attributionTag].filter(Boolean).join(' · ').slice(0, 900) || undefined;
 
   // Optional BOGO crêpe promo. Requires an email/phone to enforce one-per-customer,
   // and at least two crêpes in the cart (buy one, get one free).
@@ -80,7 +85,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       orderType === 'DELIVERY' && typeof body?.deliveryFeeCents === 'number'
         ? body.deliveryFeeCents : 0;
     const { orderId: id, raw } = await createOrder({
-      lines, note: body?.note, customerName, orderType,
+      lines, note: orderNote, customerName, orderType,
       discounts: discounts.length ? discounts : undefined,
       deliveryFeeCents: deliveryFeeCents || undefined,
     });
@@ -113,7 +118,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   let printed = false;
   try {
     const dollars = (amountCents / 100).toFixed(2);
-    const label = `PAID ONLINE $${dollars}${customerName ? ' · ' + customerName : ''}${orderType ? ' · ' + orderType : ''}`;
+    const label = `PAID ONLINE $${dollars}${customerName ? ' · ' + customerName : ''}${orderType ? ' · ' + orderType : ''}${attributionTag ? ' · ' + attributionTag : ''}`;
     await setOrderNote(orderId, label);
     await printOrder(orderId);
     printed = true;
@@ -130,6 +135,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   res.status(200).json({
     ok: true, orderId, paymentId, amountCents, printed,
+    attributionRecorded: !!attributionTag,
     bogoApplied, ...(bogoReason ? { bogoReason } : {}),
   });
 }

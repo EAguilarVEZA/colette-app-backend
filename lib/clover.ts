@@ -27,8 +27,9 @@ export function assertConfigured(): string[] {
 // ---------- CORS + helpers ----------
 export function applyCors(req: VercelRequest, res: VercelResponse): boolean {
   const origin = (req.headers.origin as string) || '';
+  const colettePreview = /^https:\/\/colette-website-[a-z0-9-]+-eaguilarvezas-projects\.vercel\.app$/.test(origin);
   const allow =
-    cfg.allowedOrigins.includes('*') || cfg.allowedOrigins.includes(origin)
+    cfg.allowedOrigins.includes('*') || cfg.allowedOrigins.includes(origin) || colettePreview
       ? cfg.allowedOrigins.includes('*')
         ? '*'
         : origin
