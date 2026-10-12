@@ -1,5 +1,4 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import Redis from 'ioredis';
 import { applyCors, fail } from '../lib/clover.js';
 import {
   buildVideoPlan,
@@ -9,7 +8,7 @@ import {
   videoStatus,
 } from '../lib/higgsfield.js';
 
-let redisClient: Redis | null = null;
+let redisClient: any = null;
 
 function bodyOf(req: VercelRequest): Record<string, any> {
   if (typeof req.body === 'string') {
@@ -23,10 +22,14 @@ function isAuthorized(req: VercelRequest): boolean {
   return !!expected && (req.headers['x-colette-secret'] as string || '') === expected;
 }
 
-async function redis(): Promise<Redis | null> {
+async function redis(): Promise<any> {
   const url = process.env.KV_REDIS_URL || process.env.REDIS_URL || process.env.KV_URL;
   if (!url) return null;
-  if (!redisClient) redisClient = new Redis(url, { maxRetriesPerRequest: 2, enableReadyCheck: false });
+  if (!redisClient) {
+    const mod: any = await import('ioredis');
+    const Redis = mod.default || mod;
+    redisClient = new Redis(url, { maxRetriesPerRequest: 2, enableReadyCheck: false });
+  }
   return redisClient;
 }
 
